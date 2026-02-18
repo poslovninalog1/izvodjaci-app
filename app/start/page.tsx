@@ -1,7 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useAuth } from "../context/AuthContext";
+import { supabase } from "@/src/lib/supabaseClient";
+import { useToast } from "../context/ToastContext";
+import { ONBOARDING_STORAGE_KEY, ONBOARDING_ROLE_KEY } from "@/src/lib/onboarding";
+import DebugPanel from "../components/DebugPanel";
 
 type AccountType = "physical" | "legal";
 type Role = "ponudjac" | "izvodjac";
@@ -21,34 +26,36 @@ const ACTIVITIES = [
 
 export default function OnboardingHome() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const { user, profile, loading, onboardingCompleted, refreshProfile } = useAuth();
+  const toast = useToast();
 
   const [step, setStep] = useState<1 | 2 | 3>(1);
-
   const [accountType, setAccountType] = useState<AccountType | "">("");
   const [role, setRole] = useState<Role | "">("");
   const [activity, setActivity] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
+  const [finishing, setFinishing] = useState(false);
 
-useEffect(() => {
-  const raw = localStorage.getItem("onboarding");
-  if (!raw) return;
-
-  try {
-    const data = JSON.parse(raw);
-    if (data.onboarding_done) {
-      if (data.role === "ponudjac") router.push("/jobs/new");
-      else router.push("/profil");
+  // Route guard: loading -> loader; not user -> login; already onboarded (localStorage + role) -> redirect to next or /
+  useEffect(() => {
+    if (loading) return;
+    if (!user) {
+      router.replace("/login?next=/start");
+      return;
     }
-  } catch {}
-}, []);
-
+    if (onboardingCompleted) {
+      const nextUrl = searchParams.get("next") || "/";
+      router.replace(nextUrl);
+      return;
+    }
+  }, [user, onboardingCompleted, loading, router, searchParams]);
 
   const next = () => {
     setErrorMsg("");
 
     if (step === 1) {
       if (!accountType) return setErrorMsg("Izaberi tip lica.");
-      // pravno preskače korak 2
       setStep(accountType === "legal" ? 3 : 2);
     }
 
@@ -65,29 +72,76 @@ useEffect(() => {
 
   const back = () => {
     setErrorMsg("");
-
     if (step === 2) setStep(1);
     if (step === 3) setStep(accountType === "legal" ? 1 : 2);
   };
 
-  const finish = () => {
-  const profile = {
-    account_type: accountType,
-    role: accountType === "legal" ? "ponudjac" : role,
-    activity,
-    onboarding_done: true,
+  const finish = async () => {
+    setFinishing(true);
+    setErrorMsg("");
+
+    const { data: { user: authUser } } = await supabase.auth.getUser();
+    if (!authUser) {
+      setFinishing(false);
+      router.replace("/login?next=/start");
+      return;
+    }
+
+    const dbRole = accountType === "legal" ? "client" : (role === "ponudjac" ? "client" : "freelancer");
+    // Only update columns that exist in actual schema: id, name, municipalities, skills, price_from, rating, deactivated, created_at; role may exist.
+    const profileUpdate: Record<string, unknown> = {
+      role: dbRole,
+      name: profile?.name ?? (authUser.user_metadata?.full_name as string) ?? "",
+      skills: profile?.skills ?? "",
+      municipalities: profile?.municipalities ?? "",
+    };
+
+    const { error: profileError } = await supabase
+      .from("profiles")
+      .update(profileUpdate)
+      .eq("id", authUser.id);
+
+    if (profileError) {
+      toast.error("Greška pri čuvanju profila: " + profileError.message);
+      if (process.env.NODE_ENV === "development") {
+        console.debug("profiles update result (non-fatal)", profileError);
+      }
+      // Do not return: set localStorage and proceed so onboarding flow completes.
+    } else if (dbRole === "freelancer") {
+      await supabase.from("freelancer_profiles").upsert(
+        { user_id: authUser.id, title: activity },
+        { onConflict: "user_id" }
+      );
+    } else {
+      await supabase.from("client_profiles").upsert(
+        { user_id: authUser.id },
+        { onConflict: "user_id" }
+      );
+    }
+
+    if (typeof window !== "undefined") {
+      localStorage.setItem(ONBOARDING_STORAGE_KEY, "1");
+      localStorage.setItem(ONBOARDING_ROLE_KEY, dbRole);
+    }
+    await refreshProfile(authUser.id);
+
+    setFinishing(false);
+    const nextUrl = searchParams.get("next") || "/";
+    router.replace(nextUrl);
+    router.refresh();
   };
 
-  localStorage.setItem("onboarding", JSON.stringify(profile));
-
-  // Umjesto /jobs/new ili /profil, vrati na početnu stranicu (dashboard)
-  router.push("/");
-};
-
+  if (loading || !user) {
+    return (
+      <div style={{ maxWidth: 640, margin: "40px auto", padding: 16 }}>
+        <p>Učitavanje...</p>
+      </div>
+    );
+  }
 
   return (
     <div style={{ maxWidth: 640, margin: "40px auto", padding: 16 }}>
-      <h1>Dobrodošli na platformu Zanatlije</h1>
+      <h1>Dobrodošli na izvođači</h1>
 
       <div style={{ opacity: 0.7, marginBottom: 12 }}>
         Korak {step}/3
@@ -119,7 +173,7 @@ useEffect(() => {
 
       {step === 2 && accountType === "physical" && (
         <section className="card">
-          <h2>Ponuđač ili zanatlija?</h2>
+          <h2>Ponuđač ili izvođač?</h2>
 
           <div className="row">
             <button
@@ -135,7 +189,7 @@ useEffect(() => {
               onClick={() => setRole("izvodjac")}
               type="button"
             >
-              Zanatlija (radnik)
+              Izvođač (radnik)
             </button>
           </div>
         </section>
@@ -161,15 +215,22 @@ useEffect(() => {
       )}
 
       {errorMsg && (
-        <p style={{ marginTop: 12 }}>
+        <div style={{ marginTop: 12, padding: 12, background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 6, color: "#b91c1c" }}>
           {errorMsg}
-        </p>
+        </div>
       )}
 
+      <DebugPanel
+        userId={user?.id}
+        profileRole={profile?.role}
+        onboardingCompleted={onboardingCompleted}
+        lastError={errorMsg || null}
+      />
+
       <div style={{ marginTop: 14, display: "flex", gap: 10 }}>
-        <button onClick={back} type="button">Nazad</button>
-        <button onClick={next} type="button">
-          {step === 3 ? "Završi" : "Nastavi"}
+        <button onClick={back} type="button" disabled={finishing}>Nazad</button>
+        <button onClick={next} type="button" disabled={finishing}>
+          {finishing ? "Čuvanje..." : step === 3 ? "Završi" : "Nastavi"}
         </button>
       </div>
     </div>

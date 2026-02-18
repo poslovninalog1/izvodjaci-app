@@ -1,5 +1,8 @@
 import "./globals.css";
-import SidebarTabs from "./components/SidebarTabs";
+import { AuthProvider } from "./context/AuthContext";
+import { ToastProvider } from "./context/ToastContext";
+import TopHeader from "./components/TopHeader";
+import DeactivatedBanner from "./components/DeactivatedBanner";
 
 export default function RootLayout({
   children,
@@ -9,10 +12,17 @@ export default function RootLayout({
   return (
     <html lang="sr">
       <body>
-        <div className="shell">
-          <SidebarTabs />
-          <main className="content">{children}</main>
-        </div>
+        <AuthProvider>
+          <ToastProvider>
+            <div className="shell">
+              <TopHeader />
+              <main className="content">
+                <DeactivatedBanner />
+                {children}
+              </main>
+            </div>
+          </ToastProvider>
+        </AuthProvider>
       </body>
     </html>
   );
