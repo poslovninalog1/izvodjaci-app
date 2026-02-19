@@ -13,7 +13,7 @@ import Badge from "../../components/ui/Badge";
 import { sr } from "@/src/lib/strings/sr";
 
 type Job = {
-  id: string | number;
+  id: number;
   title: string | null;
   description: string | null;
   city: string | null;
@@ -25,7 +25,12 @@ type Job = {
   created_at: string;
   client_id: string | null;
   category_id: number | null;
+  // status exists since migration 00002 — safe to select
+  status: string | null;
+  // decision_deadline only exists after migration 00013 — NOT selected here
 };
+
+const DEV = process.env.NODE_ENV === "development";
 
 export default function JobDetailPage() {
   const params = useParams();
@@ -35,6 +40,7 @@ export default function JobDetailPage() {
   const [job, setJob] = useState<Job | null>(null);
   const [categoryName, setCategoryName] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [proposalCount, setProposalCount] = useState<number | null>(null);
   const [showReport, setShowReport] = useState(false);
 
@@ -44,53 +50,89 @@ export default function JobDetailPage() {
       setJob(null);
       return;
     }
-    async function load() {
-      if (process.env.NODE_ENV === "development") {
-        console.log("[job-detail] param id", idParam, "type", typeof idParam);
-      }
-      const { data, error } = await supabase
-        .from("jobs")
-        .select("id, title, description, city, category_id, client_id, budget_min, budget_max, budget_type, is_remote, skills, created_at")
-        .eq("id", idParam)
-        .single();
+    let cancelled = false;
+    setLoading(true);
+    setFetchError(null);
 
-      if (process.env.NODE_ENV === "development" && error) {
-        console.log("[job-detail] error", error.message, error.code, error.details);
-      }
-      if (error || !data) {
-        if (error) console.error("[job detail] Supabase error:", error.message, error.code);
-        setJob(null);
-      } else {
-        setJob(data as Job);
-        if (data.category_id) {
-          const { data: cat } = await supabase
-            .from("categories")
-            .select("name")
-            .eq("id", data.category_id)
-            .single();
-          setCategoryName(cat?.name ?? null);
+    async function load() {
+      try {
+        if (DEV) console.log("[job-detail] fetching id:", idParam);
+
+        const { data, error } = await supabase
+          .from("jobs")
+          // NOTE: decision_deadline intentionally omitted — column added in migration 00013.
+          // Add it back here after applying that migration to the database.
+          .select("id, title, description, city, category_id, client_id, budget_min, budget_max, budget_type, is_remote, skills, created_at, status")
+          .eq("id", idParam)
+          .single();
+
+        if (cancelled) return;
+
+        if (error) {
+          if (DEV) {
+            console.error("[job-detail] Supabase error:", {
+              code: error.code,
+              message: error.message,
+              details: error.details,
+              hint: error.hint,
+            });
+          }
+          // PGRST116 = "Results contain 0 rows" → true not-found
+          // 42703      = undefined column (migration not applied)
+          // 401/403    = RLS / no access
+          if (error.code === "42703") {
+            // Column missing in DB — migration not applied.
+            // Fall back to showing an error rather than "not found".
+            setFetchError("Greška pri učitavanju — kontaktirajte podršku. (42703)");
+          } else {
+            setJob(null);
+          }
+        } else if (!data) {
+          setJob(null);
+        } else {
+          setJob(data as Job);
+          if (data.category_id) {
+            const { data: cat } = await supabase
+              .from("categories")
+              .select("name")
+              .eq("id", data.category_id)
+              .single();
+            if (!cancelled) setCategoryName(cat?.name ?? null);
+          }
         }
+      } catch (err) {
+        if (DEV) console.error("[job-detail] unexpected exception:", err);
+        if (!cancelled) setFetchError("Greška pri učitavanju.");
+      } finally {
+        // Always clear loading, even for stale requests.
+        if (!cancelled) setLoading(false);
       }
-      setLoading(false);
     }
+
     load();
+    return () => { cancelled = true; };
   }, [idParam]);
 
   useEffect(() => {
     if (!idParam || !user || !job) return;
     if (job.client_id !== user.id) return;
     async function loadCount() {
-      const { count } = await supabase
-        .from("proposals")
-        .select("id", { count: "exact", head: true })
-        .eq("job_id", id);
-      setProposalCount(count ?? 0);
+      try {
+        const { count } = await supabase
+          .from("proposals")
+          .select("id", { count: "exact", head: true })
+          .eq("job_id", idParam);
+        setProposalCount(count ?? 0);
+      } catch {
+        setProposalCount(null);
+      }
     }
     loadCount();
   }, [idParam, user, job?.client_id]);
 
   const isOwner = user && job?.client_id === user.id;
 
+  // ── Loading state ──────────────────────────────────────────────────
   if (loading) {
     return (
       <div style={{ maxWidth: 900, margin: "0 auto" }}>
@@ -99,6 +141,17 @@ export default function JobDetailPage() {
     );
   }
 
+  // ── Error state (e.g. missing column / server error) ───────────────
+  if (fetchError) {
+    return (
+      <div style={{ maxWidth: 900, margin: "0 auto" }}>
+        <p style={{ color: "var(--danger)" }}>{fetchError}</p>
+        <Link href="/jobs">← {sr.backToJobs}</Link>
+      </div>
+    );
+  }
+
+  // ── Not found (loading complete and no job) ────────────────────────
   if (!job) {
     return (
       <div style={{ maxWidth: 900, margin: "0 auto" }}>
@@ -109,6 +162,8 @@ export default function JobDetailPage() {
   }
 
   const posted = job.created_at ? new Date(job.created_at).toLocaleDateString("sr-Latn") : "";
+  // Show the proposal form for published jobs and for jobs without status set (old data)
+  const canApply = job.status === "published" || job.status == null;
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 24, maxWidth: 1000, margin: "0 auto", alignItems: "start" }}>
@@ -125,6 +180,8 @@ export default function JobDetailPage() {
             {job.city && <span>{job.city}</span>}
             {job.is_remote && <Badge variant="accent">Remote</Badge>}
             {posted && <span>• Objavljeno {posted}</span>}
+            {job.status === "closed" && <Badge variant="muted">Zatvoren</Badge>}
+            {job.status === "expired" && <Badge variant="cancelled">Istekao</Badge>}
           </div>
 
           <div style={{ marginBottom: 20, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>
@@ -168,7 +225,7 @@ export default function JobDetailPage() {
             </Link>
           )}
 
-          {(
+          {canApply && (
             <>
               <ProposalForm jobId={job.id} budgetType={job.budget_type} />
               {!user && (
@@ -177,6 +234,13 @@ export default function JobDetailPage() {
                 </p>
               )}
             </>
+          )}
+
+          {job.status === "closed" && (
+            <p style={{ margin: 0, color: "var(--muted)", fontSize: 14 }}>Ovaj posao je zatvoren.</p>
+          )}
+          {job.status === "expired" && (
+            <p style={{ margin: 0, color: "var(--danger)", fontSize: 14 }}>Rok za ovaj posao je istekao.</p>
           )}
         </Card>
       </div>

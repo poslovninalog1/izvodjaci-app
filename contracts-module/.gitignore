@@ -1,0 +1,17 @@
+# Dependencies — do not commit
+node_modules/
+
+# Build output
+dist/
+
+# Env (use .env.example as template)
+.env
+.env.local
+.env.*.local
+
+# Prisma
+.prisma/
+
+# Logs / misc
+*.log
+.DS_Store

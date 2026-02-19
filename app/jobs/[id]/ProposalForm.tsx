@@ -11,7 +11,7 @@ import Button from "../../components/ui/Button";
 import Card from "../../components/ui/Card";
 
 type Props = {
-  jobId: number;
+  jobId: number | string;
   budgetType: string | null;
 };
 
@@ -32,17 +32,22 @@ export default function ProposalForm({ jobId, budgetType }: Props) {
       setChecking(false);
       return;
     }
+    let cancelled = false;
     async function check() {
-      const { data } = await supabase
-        .from("proposals")
-        .select("id")
-        .eq("job_id", jobId)
-        .eq("freelancer_id", user!.id)
-        .maybeSingle();
-      setExistingProposal(data as { id: number } | null);
-      setChecking(false);
+      try {
+        const { data } = await supabase
+          .from("proposals")
+          .select("id")
+          .eq("job_id", jobId)
+          .eq("freelancer_id", user!.id)
+          .maybeSingle();
+        if (!cancelled) setExistingProposal(data as { id: number } | null);
+      } finally {
+        if (!cancelled) setChecking(false);
+      }
     }
     check();
+    return () => { cancelled = true; };
   }, [jobId, user, profile?.role]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -70,23 +75,27 @@ export default function ProposalForm({ jobId, budgetType }: Props) {
       cover_letter: coverLetter.trim(),
       proposed_fixed: isFixed ? Number(proposedFixed) : null,
       proposed_rate: !isFixed ? Number(proposedRate) : null,
+      // "submitted" matches the existing DB check constraint (migration 00003).
+      // Once migration 00013 is applied, change this to "pending".
       status: "submitted",
     };
 
-    const { error: err } = await supabase.from("proposals").insert([payload]);
-
-    setSubmitting(false);
-    if (err) {
-      if (err.code === "23505") {
-        setError("Već si poslao ponudu na ovaj posao.");
-        setExistingProposal({ id: 0 });
-      } else {
-        setError("Greška: " + err.message);
+    try {
+      const { error: err } = await supabase.from("proposals").insert([payload]);
+      if (err) {
+        if (err.code === "23505") {
+          setError("Već si poslao ponudu na ovaj posao.");
+          setExistingProposal({ id: 0 });
+        } else {
+          setError("Greška: " + err.message);
+        }
+        return;
       }
-      return;
+      toast.success("Ponuda je poslata!");
+      setSubmitted(true);
+    } finally {
+      setSubmitting(false);
     }
-    toast.success("Ponuda je poslata!");
-    setSubmitted(true);
   };
 
   if (checking || !user || profile?.role !== "freelancer" || profile?.deactivated) return null;

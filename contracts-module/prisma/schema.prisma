@@ -1,0 +1,193 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum ContractStatus {
+  DRAFT
+  PENDING_SIGNATURES
+  PARTIALLY_SIGNED
+  SIGNED
+  CANCELLED
+  DISPUTED
+  RESOLVED
+}
+
+enum PartyRole {
+  EMPLOYER
+  CONTRACTOR
+}
+
+enum PaymentMethod {
+  OFFLINE
+  ESCROW
+}
+
+enum SignatureMethod {
+  SES_OTP
+}
+
+// ---------------------------------------------------------------------------
+// Contract — snapshot of the agreement at creation time
+// All party details are denormalized so the document remains accurate even if
+// the source User row is later edited.
+// ---------------------------------------------------------------------------
+
+model Contract {
+  id                    String         @id @default(uuid())
+  contractNumber        String         @unique
+  offerId               String         @unique // one active contract per accepted offer
+  jobId                 String
+  jobTitle              String
+  jobDescription        String
+  employerId            String
+  employerName          String
+  employerEmail         String
+  employerAddress       String         @default("")
+  employerIdNumber      String         @default("")
+  contractorId          String
+  contractorName        String
+  contractorEmail       String
+  contractorAddress     String         @default("")
+  contractorIdNumber    String         @default("")
+  price                 Decimal
+  deadline              DateTime?
+  paymentMethod         PaymentMethod  @default(OFFLINE)
+  employerObligations   String[]       @default([])
+  contractorObligations String[]       @default([])
+  place                 String?
+  status                ContractStatus @default(DRAFT)
+  version               Int            @default(1)
+
+  draftPdfKey           String?
+  draftPdfHash          String?
+  signedPdfKey          String?
+  signedPdfHash         String?
+  finalHash             String?
+
+  expiresAt             DateTime?
+
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
+
+  signatures            ContractSignature[]
+  auditLogs             ContractAuditLog[]
+  amendments            ContractAmendment[]
+  otps                  ContractOtp[]
+
+  @@index([employerId])
+  @@index([contractorId])
+  @@index([status])
+  @@map("ctm_contracts")
+}
+
+// ---------------------------------------------------------------------------
+// Signature — one per party per contract; immutable after creation
+// ---------------------------------------------------------------------------
+
+model ContractSignature {
+  id                  String          @id @default(uuid())
+  contractId          String
+  contract            Contract        @relation(fields: [contractId], references: [id])
+  userId              String
+  partyRole           PartyRole
+  signedAt            DateTime        @default(now())
+  ipAddress           String
+  userAgent           String
+  signatureMethod     SignatureMethod  @default(SES_OTP)
+  signatureId         String          @unique @default(uuid())
+  pdfHashAtSigning    String
+
+  @@unique([contractId, partyRole])
+  @@index([contractId])
+  @@index([userId])
+  @@map("ctm_signatures")
+}
+
+// ---------------------------------------------------------------------------
+// Audit log — append-only
+// ---------------------------------------------------------------------------
+
+model ContractAuditLog {
+  id          String   @id @default(uuid())
+  contractId  String
+  contract    Contract @relation(fields: [contractId], references: [id])
+  action      String
+  actorId     String?
+  metadata    Json?
+  ipAddress   String?
+  createdAt   DateTime @default(now())
+
+  @@index([contractId])
+  @@index([createdAt])
+  @@map("ctm_audit_logs")
+}
+
+// ---------------------------------------------------------------------------
+// OTP — for SES signing verification
+// ---------------------------------------------------------------------------
+
+model ContractOtp {
+  id          String   @id @default(uuid())
+  contractId  String
+  contract    Contract @relation(fields: [contractId], references: [id])
+  userId      String
+  otpHash     String
+  salt        String
+  expiresAt   DateTime
+  attempts    Int      @default(0)
+  used        Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@index([contractId, userId])
+  @@map("ctm_otps")
+}
+
+// ---------------------------------------------------------------------------
+// Amendment (Annex) — linked to original contract; has own signatures + hash
+// ---------------------------------------------------------------------------
+
+model ContractAmendment {
+  id            String                @id @default(uuid())
+  contractId    String
+  contract      Contract              @relation(fields: [contractId], references: [id])
+  annexNumber   Int
+  title         String
+  content       String
+  pdfKey        String?
+  pdfHash       String?
+  status        ContractStatus        @default(DRAFT)
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+
+  signatures    AmendmentSignature[]
+
+  @@unique([contractId, annexNumber])
+  @@index([contractId])
+  @@map("ctm_amendments")
+}
+
+model AmendmentSignature {
+  id               String            @id @default(uuid())
+  amendmentId      String
+  amendment        ContractAmendment @relation(fields: [amendmentId], references: [id])
+  userId           String
+  partyRole        PartyRole
+  signedAt         DateTime          @default(now())
+  ipAddress        String
+  userAgent        String
+  signatureId      String            @unique @default(uuid())
+  pdfHashAtSigning String
+
+  @@unique([amendmentId, partyRole])
+  @@index([amendmentId])
+  @@map("ctm_amendment_signatures")
+}

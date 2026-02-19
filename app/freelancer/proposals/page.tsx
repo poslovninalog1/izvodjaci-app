@@ -5,8 +5,10 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "../../context/AuthContext";
 import { supabase } from "@/src/lib/supabaseClient";
+import { useToast } from "../../context/ToastContext";
 import Card from "../../components/ui/Card";
 import Badge from "../../components/ui/Badge";
+import Button from "../../components/ui/Button";
 import { sr } from "@/src/lib/strings/sr";
 
 type Proposal = {
@@ -16,6 +18,7 @@ type Proposal = {
   proposed_rate: number | null;
   proposed_fixed: number | null;
   status: string | null;
+  rejection_reason: string | null;
   created_at: string;
   jobs: unknown;
 };
@@ -23,9 +26,11 @@ type Proposal = {
 export default function FreelancerProposalsPage() {
   const router = useRouter();
   const { user, profile, loading: authLoading } = useAuth();
+  const toast = useToast();
 
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [loading, setLoading] = useState(true);
+  const [withdrawingId, setWithdrawingId] = useState<number | null>(null);
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -41,19 +46,54 @@ export default function FreelancerProposalsPage() {
   useEffect(() => {
     if (!user) return;
     const uid = user.id;
-    async function load() {
-      const { data, error } = await supabase
-        .from("proposals")
-        .select("id, job_id, cover_letter, proposed_rate, proposed_fixed, status, created_at, jobs(title)")
-        .eq("freelancer_id", uid)
-        .order("created_at", { ascending: false });
+    let cancelled = false;
 
-      if (error) setProposals([]);
-      else setProposals((data as unknown as Proposal[]) ?? []);
-      setLoading(false);
+    async function load() {
+      try {
+        const { data, error } = await supabase
+          .from("proposals")
+          .select("id, job_id, cover_letter, proposed_rate, proposed_fixed, status, rejection_reason, created_at, jobs(title)")
+          .eq("freelancer_id", uid)
+          .order("created_at", { ascending: false });
+
+        if (cancelled) return;
+        if (error) setProposals([]);
+        else setProposals((data as unknown as Proposal[]) ?? []);
+      } catch (err) {
+        if (!cancelled) {
+          console.error("[freelancer/proposals] fetch error:", err);
+          setProposals([]);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     }
     load();
+    return () => { cancelled = true; };
   }, [user?.id]);
+
+  const handleWithdraw = async (proposalId: number) => {
+    setWithdrawingId(proposalId);
+    try {
+      const { error } = await supabase
+        .from("proposals")
+        .update({ status: "withdrawn" })
+        .eq("id", proposalId);
+
+      if (error) {
+        toast.error("Greška: " + error.message);
+      } else {
+        setProposals((prev) =>
+          prev.map((p) => (p.id === proposalId ? { ...p, status: "withdrawn" } : p))
+        );
+        toast.success(sr.proposalWithdrawn);
+      }
+    } catch {
+      toast.error("Greška pri povlačenju ponude.");
+    } finally {
+      setWithdrawingId(null);
+    }
+  };
 
   const getPrice = (p: Proposal) => {
     if (p.proposed_fixed != null) return `${p.proposed_fixed} €`;
@@ -62,10 +102,11 @@ export default function FreelancerProposalsPage() {
   };
 
   const getStatusBadge = (s: string | null) => {
-    if (s === "submitted") return <Badge variant="accent">Poslato</Badge>;
-    if (s === "shortlisted") return <Badge variant="active">U užem izboru</Badge>;
-    if (s === "rejected") return <Badge variant="cancelled">Odbijeno</Badge>;
-    if (s === "hired") return <Badge variant="active">Angažovan</Badge>;
+    if (s === "pending") return <Badge variant="accent">{sr.statusPending}</Badge>;
+    if (s === "accepted") return <Badge variant="active">{sr.statusAccepted}</Badge>;
+    if (s === "rejected") return <Badge variant="cancelled">{sr.statusRejected}</Badge>;
+    if (s === "withdrawn") return <Badge variant="muted">{sr.statusWithdrawn}</Badge>;
+    if (s === "expired") return <Badge variant="cancelled">{sr.statusExpired}</Badge>;
     return <Badge variant="muted">{s ?? "—"}</Badge>;
   };
 
@@ -104,6 +145,7 @@ export default function FreelancerProposalsPage() {
                   <th style={{ padding: 14, fontSize: 13, fontWeight: 600 }}>Status</th>
                   <th style={{ padding: 14, fontSize: 13, fontWeight: 600 }}>Ponuđena cijena</th>
                   <th style={{ padding: 14, fontSize: 13, fontWeight: 600 }}>Datum</th>
+                  <th style={{ padding: 14, fontSize: 13, fontWeight: 600 }}>Akcije</th>
                 </tr>
               </thead>
               <tbody>
@@ -114,10 +156,29 @@ export default function FreelancerProposalsPage() {
                         {getJobTitle(p)}
                       </Link>
                     </td>
-                    <td style={{ padding: 14 }}>{getStatusBadge(p.status)}</td>
+                    <td style={{ padding: 14 }}>
+                      {getStatusBadge(p.status)}
+                      {p.status === "rejected" && p.rejection_reason && (
+                        <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--danger)" }}>
+                          {p.rejection_reason}
+                        </p>
+                      )}
+                    </td>
                     <td style={{ padding: 14, color: "var(--accent)", fontWeight: 500 }}>{getPrice(p)}</td>
                     <td style={{ padding: 14, color: "var(--muted)", fontSize: 14 }}>
                       {p.created_at ? new Date(p.created_at).toLocaleDateString("sr-Latn") : "—"}
+                    </td>
+                    <td style={{ padding: 14 }}>
+                      {p.status === "pending" && (
+                        <Button
+                          variant="secondary"
+                          style={{ padding: "6px 12px", fontSize: 12 }}
+                          onClick={() => handleWithdraw(p.id)}
+                          disabled={withdrawingId === p.id}
+                        >
+                          {withdrawingId === p.id ? "..." : sr.withdraw}
+                        </Button>
+                      )}
                     </td>
                   </tr>
                 ))}

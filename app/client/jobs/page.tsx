@@ -15,6 +15,7 @@ type Job = {
   title: string | null;
   status: string | null;
   created_at: string;
+  decision_deadline: string | null;
 };
 
 export default function ClientJobsPage() {
@@ -39,26 +40,45 @@ export default function ClientJobsPage() {
     if (!user) return;
     const uid = user.id;
     async function load() {
-      const { data, error } = await supabase
-        .from("jobs")
-        .select("id, title, status, created_at")
-        .eq("client_id", uid)
-        .order("created_at", { ascending: false });
+      try {
+        const { data, error } = await supabase
+          .from("jobs")
+          .select("id, title, status, created_at, decision_deadline")
+          .eq("client_id", uid)
+          .order("created_at", { ascending: false });
 
-      if (error) {
-        console.error("[client/jobs] Supabase error:", error.message, error.code, error.hint);
+        if (error) {
+          console.error("[client/jobs] Supabase error:", error.message, error.code, error.hint);
+          setJobs([]);
+        } else {
+          setJobs((data as Job[]) ?? []);
+        }
+      } catch (err) {
+        console.error("[client/jobs] fetch exception:", err);
         setJobs([]);
-      } else {
-        setJobs((data as Job[]) ?? []);
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     }
     load();
   }, [user?.id]);
 
   const getStatusBadge = (s: string | null) => {
-    if (s === "open") return <Badge variant="active">Otvoren</Badge>;
+    if (s === "published") return <Badge variant="active">{sr.statusPublished}</Badge>;
+    if (s === "closed") return <Badge variant="muted">{sr.statusClosed}</Badge>;
+    if (s === "expired") return <Badge variant="cancelled">{sr.statusExpired}</Badge>;
+    if (s === "draft") return <Badge variant="muted">{sr.statusDraft}</Badge>;
     return <Badge variant="muted">{s ?? "—"}</Badge>;
+  };
+
+  const getDeadlineText = (d: string | null) => {
+    if (!d) return null;
+    const diff = new Date(d).getTime() - Date.now();
+    if (diff <= 0) return sr.deadlineExpired;
+    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+    const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+    if (days > 0) return `${days}d ${hours}h`;
+    return `${hours}h`;
   };
 
   if (authLoading || !user || profile?.role !== "client") {
@@ -90,34 +110,41 @@ export default function ClientJobsPage() {
                 <tr style={{ borderBottom: "1px solid var(--border)", textAlign: "left" }}>
                   <th style={{ padding: 14, fontSize: 13, fontWeight: 600 }}>Naslov</th>
                   <th style={{ padding: 14, fontSize: 13, fontWeight: 600 }}>Status</th>
+                  <th style={{ padding: 14, fontSize: 13, fontWeight: 600 }}>Rok</th>
                   <th style={{ padding: 14, fontSize: 13, fontWeight: 600 }}>Datum</th>
                   <th style={{ padding: 14, fontSize: 13, fontWeight: 600 }}>Akcije</th>
                 </tr>
               </thead>
               <tbody>
-                {jobs.map((job) => (
-                  <tr key={job.id} style={{ borderBottom: "1px solid var(--border)" }}>
-                    <td style={{ padding: 14 }}>
-                      <Link href={`/jobs/${job.id}`} style={{ color: "inherit", textDecoration: "none", fontWeight: 500 }}>
-                        {job.title || "Bez naslova"}
-                      </Link>
-                    </td>
-                    <td style={{ padding: 14 }}>{getStatusBadge(job.status)}</td>
-                    <td style={{ padding: 14, color: "var(--muted)", fontSize: 14 }}>
-                      {job.created_at ? new Date(job.created_at).toLocaleDateString("sr-Latn") : "—"}
-                    </td>
-                    <td style={{ padding: 14 }}>
-                      <span style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                        <Link href={`/jobs/${job.id}`}>
-                          <Button variant="secondary" style={{ padding: "6px 12px", fontSize: 12 }}>Pogledaj</Button>
+                {jobs.map((job) => {
+                  const dl = job.status === "published" ? getDeadlineText(job.decision_deadline) : null;
+                  return (
+                    <tr key={job.id} style={{ borderBottom: "1px solid var(--border)" }}>
+                      <td style={{ padding: 14 }}>
+                        <Link href={`/jobs/${job.id}`} style={{ color: "inherit", textDecoration: "none", fontWeight: 500 }}>
+                          {job.title || "Bez naslova"}
                         </Link>
-                        <Link href={`/client/jobs/${job.id}/proposals`}>
-                          <Button variant="secondary" style={{ padding: "6px 12px", fontSize: 12 }}>Ponude</Button>
-                        </Link>
-                      </span>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      <td style={{ padding: 14 }}>{getStatusBadge(job.status)}</td>
+                      <td style={{ padding: 14, fontSize: 13, color: dl === sr.deadlineExpired ? "var(--danger)" : "var(--muted)" }}>
+                        {dl ?? "—"}
+                      </td>
+                      <td style={{ padding: 14, color: "var(--muted)", fontSize: 14 }}>
+                        {job.created_at ? new Date(job.created_at).toLocaleDateString("sr-Latn") : "—"}
+                      </td>
+                      <td style={{ padding: 14 }}>
+                        <span style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                          <Link href={`/jobs/${job.id}`}>
+                            <Button variant="secondary" style={{ padding: "6px 12px", fontSize: 12 }}>Pogledaj</Button>
+                          </Link>
+                          <Link href={`/client/jobs/${job.id}/proposals`}>
+                            <Button variant="secondary" style={{ padding: "6px 12px", fontSize: 12 }}>Ponude</Button>
+                          </Link>
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
