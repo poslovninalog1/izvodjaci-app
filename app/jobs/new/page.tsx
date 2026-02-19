@@ -112,13 +112,6 @@ export default function NewJob() {
       return;
     }
 
-    if (process.env.NODE_ENV === "development") {
-      const hasUrl = !!process.env.NEXT_PUBLIC_SUPABASE_URL;
-      const hasKey = !!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-      console.log("[jobs/new] Supabase config:", { hasUrl, hasKey });
-      console.log("Creating job as:", authUser.id);
-    }
-
     const payload = {
       client_id: authUser.id,
       status: "published",
@@ -131,21 +124,10 @@ export default function NewJob() {
       category_id: categoryId ? Number(categoryId) : null,
     };
 
-    if (process.env.NODE_ENV === "development") {
-      console.log("[jobs/new] before insert — auth user id:", authUser.id);
-      console.log("[jobs/new] before insert — payload keys:", Object.keys(payload));
-      console.log("[jobs/new] before insert — critical fields:", {
-        status: payload.status,
-        client_id: payload.client_id ? "[SET]" : null,
-        city: payload.city,
-        category_id: payload.category_id,
-      });
-    }
-
     const { data, error } = await supabase
       .from("jobs")
       .insert(payload)
-      .select("*")
+      .select("id")
       .single();
 
     setSubmitting(false);
@@ -170,13 +152,6 @@ export default function NewJob() {
       toast.error("Posao nije sačuvan. Pokušajte ponovo.");
       if (process.env.NODE_ENV === "development") console.error("[jobs/new] insert returned no id:", { data });
       return;
-    }
-
-    if (process.env.NODE_ENV === "development") {
-      console.log("[jobs/new] insert success — data.id:", data.id, "data.created_at:", data.created_at, "data.status:", data.status, "data.client_id:", data.client_id ? "[SET]" : null);
-      if (typeof window !== "undefined") window.sessionStorage.setItem("jobs_debug_last_id", String(data.id));
-      const verify = await supabase.from("jobs").select("*").eq("id", data.id).single();
-      console.log("[jobs/new] verify SELECT by id:", verify.data ? { id: verify.data.id, status: verify.data.status } : "no row", "error:", verify.error ? { message: verify.error.message, code: verify.error.code, details: verify.error.details, hint: verify.error.hint } : null);
     }
 
     toast.success("Posao je objavljen.");

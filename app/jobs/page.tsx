@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { supabase } from "@/src/lib/supabaseClient";
@@ -16,20 +16,14 @@ type Job = {
   title: string | null;
   description: string | null;
   city: string | null;
-  budget_type: string | null;
+  category_id: number | null;
+  client_id: string | null;
   budget_min: number | null;
   budget_max: number | null;
+  budget_type: string | null;
   is_remote: boolean | null;
-  skills: string[] | null;
   created_at: string;
-  categories: unknown;
 };
-
-function getCategoryName(cat: unknown): string | null {
-  if (!cat) return null;
-  if (Array.isArray(cat)) return (cat[0] as { name?: string })?.name ?? null;
-  return (cat as { name?: string })?.name ?? null;
-}
 
 const PAGE_SIZE = 12;
 
@@ -44,15 +38,28 @@ export default function JobsPage() {
   const [page, setPage] = useState(0);
   const [total, setTotal] = useState(0);
   const [search, setSearch] = useState(qFromUrl);
+  const [debouncedSearch, setDebouncedSearch] = useState(qFromUrl);
   const [categoryId, setCategoryId] = useState("");
   const [city, setCity] = useState("");
   const [isRemote, setIsRemote] = useState<boolean | "">("");
   const [budgetType, setBudgetType] = useState("");
   const [sort, setSort] = useState<"newest" | "budget">("newest");
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const requestIdRef = useRef(0);
 
   useEffect(() => {
     setSearch(qFromUrl);
+    setDebouncedSearch(qFromUrl);
   }, [qFromUrl]);
+
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      setDebouncedSearch(search);
+    }, 300);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [search]);
 
   useEffect(() => {
     async function loadOptions() {
@@ -66,69 +73,64 @@ export default function JobsPage() {
     loadOptions();
   }, []);
 
+  const categoryMap = useRef<Map<number, string>>(new Map());
+  useEffect(() => {
+    const m = new Map<number, string>();
+    for (const c of categories) m.set(c.id, c.name);
+    categoryMap.current = m;
+  }, [categories]);
+
   const fetchJobs = useCallback(async () => {
+    const rid = ++requestIdRef.current;
     setLoading(true);
-    const searchTerm = search.trim() || qFromUrl.trim();
-    const filters = {
-      search: searchTerm,
-      categoryId,
-      city,
-      isRemote,
-      budgetType,
-      sort,
-      statusFilter: "published",
-      ownerFilter: "none",
-    };
-    if (process.env.NODE_ENV === "development") {
-      const { data: { user: listUser } } = await supabase.auth.getUser();
-      console.log("[jobs] fetchJobs — auth user id on /jobs:", listUser?.id ?? "anonymous");
-      console.log("[jobs] fetchJobs — exact filters (first load / current):", filters);
-    }
+    setFetchError(null);
+    try {
+      const searchTerm = debouncedSearch.trim();
 
-    let query = supabase
-      .from("jobs")
-      .select("id, title, description, city, budget_type, budget_min, budget_max, is_remote, skills, created_at, category_id, categories(name)", { count: "exact" })
-      .eq("status", "published");
+      let query = supabase
+        .from("jobs")
+        .select("id, title, description, city, category_id, client_id, budget_min, budget_max, budget_type, is_remote, created_at", { count: "exact" });
 
-    if (searchTerm) {
-      query = query.or(`title.ilike.%${searchTerm}%,description.ilike.%${searchTerm}%`);
-    }
-    if (categoryId) query = query.eq("category_id", Number(categoryId));
-    if (city) query = query.eq("city", city);
-    if (isRemote === true) query = query.eq("is_remote", true);
-    if (budgetType) query = query.eq("budget_type", budgetType);
-
-    if (sort === "newest") {
-      query = query.order("created_at", { ascending: false });
-    } else {
-      query = query.order("budget_max", { ascending: false, nullsFirst: false });
-    }
-
-    const from = page * PAGE_SIZE;
-    const { data, count, error } = await query.range(from, from + PAGE_SIZE - 1);
-
-    if (process.env.NODE_ENV === "development") {
-      console.log("[jobs] fetchJobs — rows:", (data as Job[])?.length ?? 0, "first row id:", (data as Job[])?.[0]?.id ?? "—", "count:", count ?? 0);
-      console.log("[jobs] fetchJobs — error:", error ? { message: error.message, code: error.code, details: error.details, hint: error.hint } : null);
-      const raw = await supabase.from("jobs").select("id, status, created_at").order("created_at", { ascending: false }).limit(5);
-      console.log("[jobs] raw sanity (latest 5, no status filter):", raw.data?.length ?? 0, "rows:", raw.data, "error:", raw.error ? { message: raw.error.message, code: raw.error.code } : null);
-      const lastId = typeof window !== "undefined" ? window.sessionStorage.getItem("jobs_debug_last_id") : null;
-      if (lastId) {
-        const byId = await supabase.from("jobs").select("*").eq("id", lastId).single();
-        console.log("[jobs] verify-by-id (from create page):", lastId, "found:", !!byId.data, "error:", byId.error ? { message: byId.error.message, code: byId.error.code } : null);
-        if (typeof window !== "undefined") window.sessionStorage.removeItem("jobs_debug_last_id");
+      if (searchTerm) {
+        query = query.or(`title.ilike.%${searchTerm}%,description.ilike.%${searchTerm}%`);
       }
-    }
+      if (categoryId) query = query.eq("category_id", Number(categoryId));
+      if (city) query = query.eq("city", city);
+      if (isRemote === true) query = query.eq("is_remote", true);
+      if (budgetType) query = query.eq("budget_type", budgetType);
 
-    if (error) {
+      if (sort === "newest") {
+        query = query.order("created_at", { ascending: false });
+      } else {
+        query = query.order("budget_max", { ascending: false, nullsFirst: false });
+      }
+
+      const from = page * PAGE_SIZE;
+      const { data, count, error } = await query.range(from, from + PAGE_SIZE - 1);
+
+      if (rid !== requestIdRef.current) return;
+
+      if (error) {
+        console.error("[jobs] Supabase error:", error.message, error.code, error.details);
+        setFetchError(error.message || "Greška pri učitavanju poslova.");
+        setJobs([]);
+        setTotal(0);
+      } else {
+        setJobs((data as Job[]) ?? []);
+        setTotal(count ?? 0);
+      }
+    } catch (err) {
+      if (rid !== requestIdRef.current) return;
+      console.error("[jobs] fetch exception:", err);
+      setFetchError("Greška pri učitavanju poslova.");
       setJobs([]);
       setTotal(0);
-    } else {
-      setJobs((data as Job[]) ?? []);
-      setTotal(count ?? 0);
+    } finally {
+      if (rid === requestIdRef.current) {
+        setLoading(false);
+      }
     }
-    setLoading(false);
-  }, [page, search, qFromUrl, categoryId, city, isRemote, budgetType, sort]);
+  }, [page, debouncedSearch, categoryId, city, isRemote, budgetType, sort]);
 
   useEffect(() => {
     fetchJobs();
@@ -210,16 +212,23 @@ export default function JobsPage() {
       <div>
         <h1 style={{ margin: "0 0 20px", fontSize: 24, fontWeight: 600 }}>{sr.jobs}</h1>
 
+        {fetchError && (
+          <Card style={{ marginBottom: 16, borderColor: "var(--danger)", color: "var(--danger)" }}>
+            <p style={{ margin: 0 }}>{fetchError}</p>
+          </Card>
+        )}
         {loading ? (
           <p style={{ color: "var(--muted)" }}>{sr.loading}</p>
         ) : jobs.length === 0 ? (
           <Card>
-            <p style={{ margin: 0, color: "var(--muted)" }}>{sr.noJobs}</p>
+            <p style={{ margin: 0, color: "var(--muted)" }}>{fetchError ? "" : sr.noJobs}</p>
           </Card>
         ) : (
           <>
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {jobs.map((job) => (
+              {jobs.map((job) => {
+                const catName = job.category_id ? categoryMap.current.get(job.category_id) : null;
+                return (
                 <Card key={job.id} style={{ padding: 20 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap" }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
@@ -233,7 +242,7 @@ export default function JobsPage() {
                         {(job.description?.length ?? 0) > 120 ? "…" : ""}
                       </p>
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
-                        {getCategoryName(job.categories) && <Badge variant="muted">{getCategoryName(job.categories)}</Badge>}
+                        {catName && <Badge variant="muted">{catName}</Badge>}
                         {job.city && <Badge variant="muted">{job.city}</Badge>}
                         {job.is_remote && <Badge variant="accent">Remote</Badge>}
                         <span style={{ fontSize: 13, color: "var(--muted)" }}>
@@ -258,7 +267,8 @@ export default function JobsPage() {
                     </div>
                   </div>
                 </Card>
-              ))}
+                );
+              })}
             </div>
 
             {totalPages > 1 && (

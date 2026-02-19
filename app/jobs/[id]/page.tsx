@@ -13,7 +13,7 @@ import Badge from "../../components/ui/Badge";
 import { sr } from "@/src/lib/strings/sr";
 
 type Job = {
-  id: number;
+  id: string | number;
   title: string | null;
   description: string | null;
   city: string | null;
@@ -22,52 +22,62 @@ type Job = {
   budget_max: number | null;
   is_remote: boolean | null;
   skills: string[] | null;
-  status: string | null;
   created_at: string;
   client_id: string | null;
-  categories: unknown;
+  category_id: number | null;
 };
-
-function getCategoryName(cat: unknown): string | null {
-  if (!cat) return null;
-  if (Array.isArray(cat)) return (cat[0] as { name?: string })?.name ?? null;
-  return (cat as { name?: string })?.name ?? null;
-}
 
 export default function JobDetailPage() {
   const params = useParams();
   const { user, profile } = useAuth();
-  const id = Number(params.id);
+  const idParam = typeof params.id === "string" ? params.id : params.id?.[0] ?? "";
 
   const [job, setJob] = useState<Job | null>(null);
+  const [categoryName, setCategoryName] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [proposalCount, setProposalCount] = useState<number | null>(null);
   const [showReport, setShowReport] = useState(false);
 
   useEffect(() => {
-    if (!id || isNaN(id)) {
+    if (!idParam) {
       setLoading(false);
+      setJob(null);
       return;
     }
     async function load() {
+      if (process.env.NODE_ENV === "development") {
+        console.log("[job-detail] param id", idParam, "type", typeof idParam);
+      }
       const { data, error } = await supabase
         .from("jobs")
-        .select("id, title, description, city, budget_type, budget_min, budget_max, is_remote, skills, status, created_at, client_id, categories(name)")
-        .eq("id", id)
+        .select("id, title, description, city, category_id, client_id, budget_min, budget_max, budget_type, is_remote, skills, created_at")
+        .eq("id", idParam)
         .single();
 
+      if (process.env.NODE_ENV === "development" && error) {
+        console.log("[job-detail] error", error.message, error.code, error.details);
+      }
       if (error || !data) {
+        if (error) console.error("[job detail] Supabase error:", error.message, error.code);
         setJob(null);
       } else {
-        setJob(data as unknown as Job);
+        setJob(data as Job);
+        if (data.category_id) {
+          const { data: cat } = await supabase
+            .from("categories")
+            .select("name")
+            .eq("id", data.category_id)
+            .single();
+          setCategoryName(cat?.name ?? null);
+        }
       }
       setLoading(false);
     }
     load();
-  }, [id]);
+  }, [idParam]);
 
   useEffect(() => {
-    if (!id || !user || !job) return;
+    if (!idParam || !user || !job) return;
     if (job.client_id !== user.id) return;
     async function loadCount() {
       const { count } = await supabase
@@ -77,7 +87,7 @@ export default function JobDetailPage() {
       setProposalCount(count ?? 0);
     }
     loadCount();
-  }, [id, user, job?.client_id]);
+  }, [idParam, user, job?.client_id]);
 
   const isOwner = user && job?.client_id === user.id;
 
@@ -111,7 +121,7 @@ export default function JobDetailPage() {
         <Card style={{ marginBottom: 20 }}>
           <h1 style={{ margin: "0 0 12px", fontSize: 24, fontWeight: 600 }}>{job.title || "Bez naslova"}</h1>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16, fontSize: 14, color: "var(--muted)" }}>
-            {getCategoryName(job.categories) && <Badge variant="muted">{getCategoryName(job.categories)}</Badge>}
+            {categoryName && <Badge variant="muted">{categoryName}</Badge>}
             {job.city && <span>{job.city}</span>}
             {job.is_remote && <Badge variant="accent">Remote</Badge>}
             {posted && <span>• Objavljeno {posted}</span>}
@@ -150,7 +160,7 @@ export default function JobDetailPage() {
       {/* Right: sticky action card */}
       <div style={{ position: "sticky", top: 80 }}>
         <Card>
-          {isOwner && job.status === "open" && (
+          {isOwner && (
             <Link href={`/client/jobs/${job.id}/proposals`} style={{ display: "block", marginBottom: 8 }}>
               <Button variant="primary" style={{ width: "100%" }}>
                 Ponude {proposalCount != null ? `(${proposalCount})` : ""}
@@ -158,7 +168,7 @@ export default function JobDetailPage() {
             </Link>
           )}
 
-          {job.status === "open" && (
+          {(
             <>
               <ProposalForm jobId={job.id} budgetType={job.budget_type} />
               {!user && (

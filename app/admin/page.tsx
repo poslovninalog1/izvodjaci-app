@@ -97,7 +97,8 @@ export default function AdminPage() {
         let q = supabase.from("jobs").select("id, title, status, created_at").order("created_at", { ascending: false });
         if (jobSearch.trim()) q = q.ilike("title", `%${jobSearch.trim()}%`);
         if (jobStatusFilter) q = q.eq("status", jobStatusFilter);
-        const { data } = await q.limit(50);
+        const { data, error } = await q.limit(50);
+        if (error) console.error("[admin/jobs] Supabase error:", error.message, error.code, error.hint);
         setJobs((data as Job[]) ?? []);
       }
       if (tab === "users") {

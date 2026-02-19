@@ -6,6 +6,7 @@ import {
   useEffect,
   useState,
   useCallback,
+  useMemo,
 } from "react";
 import { User, Session } from "@supabase/supabase-js";
 import { supabase } from "@/src/lib/supabaseClient";
@@ -54,9 +55,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       .single();
     const profileData = data as Profile | null;
     setProfile(profileData);
-    if (process.env.NODE_ENV === "development") {
-      console.log("[AuthContext] profile fetch result:", { userId, profile: profileData, error: error?.message });
-    }
     return profileData;
   }, []);
 
@@ -75,18 +73,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(s?.user ?? null);
       if (s?.user) await fetchProfile(s.user.id);
       setLoading(false);
-      if (process.env.NODE_ENV === "development") {
-        console.log("[AuthContext] init complete:", { hasSession: !!s, authUserId: s?.user?.id });
-      }
     };
     init();
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange(async (event, s) => {
-      if (process.env.NODE_ENV === "development") {
-        console.log("[AuthContext] auth state change:", event, "userId:", s?.user?.id);
-      }
       setSession(s);
       setUser(s?.user ?? null);
       if (s?.user) await fetchProfile(s.user.id);
@@ -104,10 +96,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const onboardingCompleted = getOnboardingCompleted(profile);
 
+  const value = useMemo<AuthState>(() => ({
+    user, session, profile, loading, onboardingCompleted, refreshProfile,
+  }), [user, session, profile, loading, onboardingCompleted, refreshProfile]);
+
   return (
-    <AuthContext.Provider
-      value={{ user, session, profile, loading, onboardingCompleted, refreshProfile }}
-    >
+    <AuthContext.Provider value={value}>
       {children}
     </AuthContext.Provider>
   );

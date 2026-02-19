@@ -1,0 +1,11 @@
+{
+    "servers": {
+      "supabase-db": {
+        "command": "C:\\Users\\Vasilije\\AppData\\Roaming\\npm\\mcp-server-postgres.cmd",
+        "args": [
+          "postgresql://postgres.yqnhxzwceejdprjgfisq:Hokif1v_120502@aws-1-eu-west-1.pooler.supabase.com:5432/postgres"
+        ]
+      }
+    }
+  }
+  

@@ -45,8 +45,12 @@ export default function ClientJobsPage() {
         .eq("client_id", uid)
         .order("created_at", { ascending: false });
 
-      if (error) setJobs([]);
-      else setJobs((data as Job[]) ?? []);
+      if (error) {
+        console.error("[client/jobs] Supabase error:", error.message, error.code, error.hint);
+        setJobs([]);
+      } else {
+        setJobs((data as Job[]) ?? []);
+      }
       setLoading(false);
     }
     load();
