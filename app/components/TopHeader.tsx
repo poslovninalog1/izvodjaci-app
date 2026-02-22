@@ -42,7 +42,6 @@ export default function TopHeader() {
   const pathname = usePathname();
   const router = useRouter();
   const { user, profile, loading, onboardingCompleted } = useAuth();
-  const [search, setSearch] = useState("");
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -63,15 +62,6 @@ export default function TopHeader() {
     if (it.role && profile?.role !== it.role) return false;
     return true;
   });
-
-  const handleSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (search.trim()) {
-      router.push(`/jobs?q=${encodeURIComponent(search.trim())}`);
-    } else {
-      router.push("/jobs");
-    }
-  };
 
   const handleLogout = async () => {
     if (typeof window !== "undefined") {
@@ -134,28 +124,8 @@ export default function TopHeader() {
           })}
         </nav>
 
-        {/* Search */}
-        <form onSubmit={handleSearch} style={{ flex: 1, minWidth: 0, maxWidth: 320, marginLeft: "auto" }}>
-          <input
-            type="search"
-            placeholder="Pretraži poslove..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="uiInput"
-            style={{
-              width: "100%",
-              padding: "8px 14px",
-              borderRadius: "var(--radius-sm)",
-              border: "1px solid var(--border)",
-              background: "#ffffff",
-              color: "var(--text)",
-              fontSize: 14,
-            }}
-          />
-        </form>
-
         {/* Right: CTA or profile dropdown */}
-        <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0, marginLeft: "auto" }}>
           {!profile?.deactivated && (
             <Link
               href={objaviPosaoHref}

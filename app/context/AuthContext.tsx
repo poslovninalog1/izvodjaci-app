@@ -65,33 +65,49 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [user?.id, fetchProfile]);
 
   useEffect(() => {
+    let mounted = true;
+
     const init = async () => {
-      const {
-        data: { session: s },
-      } = await supabase.auth.getSession();
-      setSession(s);
-      setUser(s?.user ?? null);
-      if (s?.user) await fetchProfile(s.user.id);
-      setLoading(false);
+      try {
+        const {
+          data: { session: s },
+        } = await supabase.auth.getSession();
+        if (!mounted) return;
+        setSession(s);
+        setUser(s?.user ?? null);
+        if (s?.user) {
+          fetchProfile(s.user.id).catch(() => {});
+        }
+      } catch {
+        // getSession() failed or threw — loading still cleared in finally
+      } finally {
+        if (mounted) setLoading(false);
+      }
     };
     init();
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (event, s) => {
+    } = supabase.auth.onAuthStateChange(async (_event, s) => {
+      if (!mounted) return;
       setSession(s);
       setUser(s?.user ?? null);
-      if (s?.user) await fetchProfile(s.user.id);
-      else {
+      if (s?.user) {
+        fetchProfile(s.user.id).catch(() => {});
+      } else {
         setProfile(null);
         if (typeof window !== "undefined") {
           localStorage.removeItem(ONBOARDING_STORAGE_KEY);
           localStorage.removeItem(ONBOARDING_ROLE_KEY);
         }
       }
+      if (mounted) setLoading(false);
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
   }, [fetchProfile]);
 
   const onboardingCompleted = getOnboardingCompleted(profile);

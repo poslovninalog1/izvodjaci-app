@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
 import { supabase } from "@/src/lib/supabaseClient";
 import Card from "../components/ui/Card";
 import Badge from "../components/ui/Badge";
@@ -30,7 +29,6 @@ const PAGE_SIZE = 12;
 const DEV = typeof window !== "undefined" && process.env.NODE_ENV === "development";
 
 // ── Default filter values ──────────────────────────────────────────────────
-const DEFAULT_SEARCH = "";
 const DEFAULT_CATEGORY = "";
 const DEFAULT_CITY = "";
 const DEFAULT_IS_REMOTE: boolean | "" = "";
@@ -40,9 +38,6 @@ const DEFAULT_BUDGET_MAX = "";
 const DEFAULT_SORT: "newest" | "budget" = "newest";
 
 export default function JobsPage() {
-  const searchParams = useSearchParams();
-  const qFromUrl = searchParams.get("q") ?? "";
-
   const [jobs, setJobs] = useState<Job[]>([]);
   const [categories, setCategories] = useState<{ id: number; name: string }[]>([]);
   const [cities, setCities] = useState<{ id: number; name: string }[]>([]);
@@ -52,8 +47,6 @@ export default function JobsPage() {
   const [fetchError, setFetchError] = useState<string | null>(null);
 
   // ── Filter state ───────────────────────────────────────────────────────
-  const [search, setSearch] = useState(qFromUrl || DEFAULT_SEARCH);
-  const [debouncedSearch, setDebouncedSearch] = useState(qFromUrl || DEFAULT_SEARCH);
   const [categoryId, setCategoryId] = useState(DEFAULT_CATEGORY);
   const [city, setCity] = useState(DEFAULT_CITY);
   const [isRemote, setIsRemote] = useState<boolean | "">(DEFAULT_IS_REMOTE);
@@ -62,24 +55,7 @@ export default function JobsPage() {
   const [budgetMax, setBudgetMax] = useState(DEFAULT_BUDGET_MAX);
   const [sort, setSort] = useState<"newest" | "budget">(DEFAULT_SORT);
 
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const requestIdRef = useRef(0);
-
-  // ── Sync URL ?q= param ─────────────────────────────────────────────────
-  useEffect(() => {
-    setSearch(qFromUrl);
-    setDebouncedSearch(qFromUrl);
-  }, [qFromUrl]);
-
-  // ── Debounce search input 300 ms ───────────────────────────────────────
-  useEffect(() => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      setDebouncedSearch(search);
-      setPage(0); // reset page when search changes
-    }, 300);
-    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
-  }, [search]);
 
   // ── Load categories + cities once ─────────────────────────────────────
   useEffect(() => {
@@ -105,23 +81,17 @@ export default function JobsPage() {
   // ── Fetch jobs ─────────────────────────────────────────────────────────
   const fetchJobs = useCallback(async () => {
     const rid = ++requestIdRef.current;
-    if (DEV) console.log("[jobs] fetch start", { reqId: rid, page, debouncedSearch, categoryId, city, isRemote, budgetType, budgetMin, budgetMax, sort });
+    if (DEV) console.log("[jobs] fetch start", { reqId: rid, page, categoryId, city, isRemote, budgetType, budgetMin, budgetMax, sort });
 
     setLoading(true);
     setFetchError(null);
 
     try {
-      const searchTerm = debouncedSearch.trim();
-
       let query = supabase
         .from("jobs")
         .select("id, title, description, city, category_id, client_id, budget_min, budget_max, budget_type, is_remote, created_at, status", { count: "exact" })
         .eq("status", "published");
 
-      // title / description — case-insensitive partial match
-      if (searchTerm) {
-        query = query.or(`title.ilike.%${searchTerm}%,description.ilike.%${searchTerm}%`);
-      }
       if (categoryId) query = query.eq("category_id", Number(categoryId));
       if (city) query = query.eq("city", city);
       if (isRemote === true) query = query.eq("is_remote", true);
@@ -164,7 +134,7 @@ export default function JobsPage() {
       if (DEV) console.log("[jobs] loading=false", { reqId: rid });
       setLoading(false);
     }
-  }, [page, debouncedSearch, categoryId, city, isRemote, budgetType, budgetMin, budgetMax, sort]);
+  }, [page, categoryId, city, isRemote, budgetType, budgetMin, budgetMax, sort]);
 
   useEffect(() => {
     fetchJobs();
@@ -172,8 +142,6 @@ export default function JobsPage() {
 
   // ── Reset all filters ──────────────────────────────────────────────────
   function resetFilters() {
-    setSearch(DEFAULT_SEARCH);
-    setDebouncedSearch(DEFAULT_SEARCH);
     setCategoryId(DEFAULT_CATEGORY);
     setCity(DEFAULT_CITY);
     setIsRemote(DEFAULT_IS_REMOTE);
@@ -211,17 +179,6 @@ export default function JobsPage() {
             }}
             style={{ display: "flex", flexDirection: "column", gap: 12 }}
           >
-            {/* Search */}
-            <div>
-              <label style={{ display: "block", marginBottom: 4, fontSize: 12, color: "var(--muted)" }}>Pretraži po naslovu</label>
-              <Input
-                type="search"
-                placeholder="Naslov posla..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-            </div>
-
             {/* Category */}
             <div>
               <label style={{ display: "block", marginBottom: 4, fontSize: 12, color: "var(--muted)" }}>Kategorija</label>
