@@ -101,6 +101,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           localStorage.removeItem(ONBOARDING_ROLE_KEY);
         }
       }
+      // On sign out or session change, profile is cleared; components that key
+      // off user?.id (e.g. InboxSidebar with key={user?.id}) will refetch and
+      // clear cached inbox list / modal state so we never show another account's data.
       if (mounted) setLoading(false);
     });
 

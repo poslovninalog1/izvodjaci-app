@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "../context/AuthContext";
 import Card from "../components/ui/Card";
 import Button from "../components/ui/Button";
@@ -10,14 +10,35 @@ import NewConversationModal from "./NewConversationModal";
 
 export default function InboxPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { user, loading: authLoading } = useAuth();
   const [showNewConvo, setShowNewConvo] = useState(false);
+  const prevUserIdRef = useRef<string | undefined>(undefined);
 
+  // Only redirect when truly unauthenticated (auth loaded and no user).
   useEffect(() => {
     if (!authLoading && !user) {
       router.replace("/login?next=/inbox");
     }
   }, [user, authLoading, router]);
+
+  // Open new-conversation modal when URL has ?new=1; then clean URL so refresh doesn't reopen.
+  useEffect(() => {
+    if (!user) return;
+    if (searchParams.get("new") === "1") {
+      setShowNewConvo(true);
+      router.replace("/inbox", { scroll: false });
+    }
+  }, [user, searchParams, router]);
+
+  // Clear modal only when session actually changes (different user), not on route/query changes.
+  useEffect(() => {
+    const currentId = user?.id;
+    if (prevUserIdRef.current !== undefined && prevUserIdRef.current !== currentId) {
+      setShowNewConvo(false);
+    }
+    prevUserIdRef.current = currentId;
+  }, [user?.id]);
 
   if (authLoading || !user) {
     return (
@@ -56,7 +77,7 @@ export default function InboxPage() {
             + Nova poruka
           </Button>
         </div>
-        <InboxSidebar />
+        <InboxSidebar key={user?.id ?? "anon"} />
       </div>
 
       <Card

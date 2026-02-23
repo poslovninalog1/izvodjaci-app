@@ -4,15 +4,13 @@ import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/src/lib/supabaseClient";
 import { useAuth } from "../context/AuthContext";
+import {
+  type ProfileSearchResult,
+  isValidProfileId,
+} from "@/src/lib/messagingTypes";
 import Card from "../components/ui/Card";
 import Input from "../components/ui/Input";
 import Button from "../components/ui/Button";
-
-type UserResult = {
-  id: string;
-  full_name: string | null;
-  role: string | null;
-};
 
 type Props = { onClose: () => void };
 
@@ -20,12 +18,13 @@ export default function NewConversationModal({ onClose }: Props) {
   const router = useRouter();
   const { user } = useAuth();
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<UserResult[]>([]);
+  const [results, setResults] = useState<ProfileSearchResult[]>([]);
   const [searching, setSearching] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
   const backdropRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const hasNavigatedRef = useRef(false);
 
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -36,58 +35,61 @@ export default function NewConversationModal({ onClose }: Props) {
     setSearching(true);
     debounceRef.current = setTimeout(async () => {
       const q = query.trim();
-      const { data: rpcData, error: rpcErr } = await supabase.rpc(
-        "search_profiles_for_inbox",
-        { query_text: q }
-      );
-      if (!rpcErr && rpcData) {
-        setResults((rpcData as UserResult[]) ?? []);
-        if (process.env.NODE_ENV === "development") {
-          // eslint-disable-next-line no-console
-          console.log("[inbox search] RPC results:", (rpcData as UserResult[]).length);
-        }
-        setSearching(false);
-        return;
-      }
       const { data } = await supabase
         .from("profiles")
-        .select("id, full_name, role")
+        .select("id, full_name")
         .ilike("full_name", `%${q}%`)
-        .neq("id", user?.id ?? "")
         .not("deactivated", "is", true)
         .limit(10);
-      setResults((data as UserResult[]) ?? []);
+
+      const rows = (data ?? []) as { id: string; full_name: string | null }[];
+      const mapped: ProfileSearchResult[] = rows.map((p) => ({
+        id: p.id,
+        displayName: p.full_name?.trim() || "Korisnik",
+      }));
+      setResults(mapped);
+
       if (process.env.NODE_ENV === "development") {
-        // eslint-disable-next-line no-console
-        console.log("[inbox search] direct results:", (data ?? []).length, "uid:", user?.id);
+        const uuids = mapped.every((r) => isValidProfileId(r.id));
+        console.log("[inbox search] results:", mapped.length, "all UUIDs:", uuids);
       }
       setSearching(false);
     }, 300);
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [query, user?.id]);
+  }, [query]);
 
-  const handleSelect = async (otherUserId: string) => {
+  const handleSelect = async (selected: ProfileSearchResult) => {
+    if (!isValidProfileId(selected.id)) {
+      setError("Neispravan korisnik. Koristi samo rezultate pretrage.");
+      return;
+    }
+    if (hasNavigatedRef.current) return;
     setCreating(true);
     setError("");
     const { data, error: err } = await supabase.rpc(
       "get_or_create_direct_conversation",
-      { other_user_id: otherUserId }
+      { other_user_id: selected.id }
     );
     if (err) {
       setError(err.message);
       setCreating(false);
       return;
     }
-    const convId = data != null ? String(data) : "";
+    const conversationId = data != null ? String(data) : "";
+    if (!conversationId || !/^[0-9]+$/.test(conversationId)) {
+      setError("Greška: konverzacija nije kreirana.");
+      setCreating(false);
+      return;
+    }
+    if (hasNavigatedRef.current) return;
+    hasNavigatedRef.current = true;
     if (process.env.NODE_ENV === "development") {
-      // eslint-disable-next-line no-console
-      console.log("[inbox] RPC conversation id:", convId, "type:", typeof data);
+      const authUid = (await supabase.auth.getUser()).data?.user?.id ?? null;
+      console.log("[inbox NewConversationModal] auth uid:", authUid, "| selectedUser.id:", selected.id, "| RPC returned conversationId:", conversationId, "| single router.push(/inbox/" + conversationId + ")");
     }
-    if (convId) {
-      router.push(`/inbox/${convId}`);
-    }
+    router.push(`/inbox/${conversationId}`);
     onClose();
   };
 
@@ -158,12 +160,12 @@ export default function NewConversationModal({ onClose }: Props) {
             </p>
           )}
 
-          {results.map((u) => (
+          {results.map((r) => (
             <button
-              key={u.id}
+              key={r.id}
               type="button"
               disabled={creating}
-              onClick={() => handleSelect(u.id)}
+              onClick={() => handleSelect(r)}
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -202,14 +204,9 @@ export default function NewConversationModal({ onClose }: Props) {
                   flexShrink: 0,
                 }}
               >
-                {(u.full_name || "?")[0].toUpperCase()}
+                {r.displayName[0]?.toUpperCase() ?? "?"}
               </div>
-              <div>
-                <div style={{ fontWeight: 500 }}>{u.full_name || "—"}</div>
-                <div style={{ fontSize: 12, color: "var(--muted)" }}>
-                  {u.role === "freelancer" ? "Izvođač" : u.role === "client" ? "Klijent" : ""}
-                </div>
-              </div>
+              <div style={{ fontWeight: 500 }}>{r.displayName}</div>
             </button>
           ))}
         </div>

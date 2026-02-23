@@ -5,8 +5,8 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "../../context/AuthContext";
 import { supabase } from "@/src/lib/supabaseClient";
-import { useToast } from "../../context/ToastContext";
 import { relativeTime } from "@/src/lib/time";
+import { isValidConversationId } from "@/src/lib/messagingTypes";
 import ReportModal from "../../components/ReportModal";
 import InboxSidebar from "../InboxSidebar";
 import Card from "../../components/ui/Card";
@@ -31,16 +31,30 @@ type ConversationMeta = {
 const MAX_MESSAGE_LENGTH = 2000;
 const PAGE_SIZE = 50;
 
+type DebugInfo = {
+  conversationId: string;
+  authUid: string | null;
+  authEmail: string | null;
+  authErr: string | null;
+  convDataYesNo: boolean;
+  convErrCode: string | null;
+  convErrMessage: string | null;
+  participantRowYesNo: boolean;
+  messagesCount: number;
+};
+
 export default function InboxChatPage() {
   const params = useParams();
   const router = useRouter();
   const { user, profile, loading: authLoading } = useAuth();
-  const toast = useToast();
-  const conversationId = (params.conversationId as string) ?? "";
+  const rawId = (params.conversationId as string) ?? "";
+  const conversationId = isValidConversationId(rawId) ? rawId : "";
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [meta, setMeta] = useState<ConversationMeta | null>(null);
   const [loading, setLoading] = useState(true);
+  const [accessDenied, setAccessDenied] = useState(false);
+  const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
@@ -70,24 +84,122 @@ export default function InboxChatPage() {
     const uid = user.id;
 
     async function load() {
-      const { data: convData, error: convErr } = await supabase
-        .from("conversations")
-        .select(
-          "id, type, contract_id, pair_key, contracts(client_id, freelancer_id, jobs(title))"
-        )
-        .eq("id", conversationId)
-        .single();
+      const devLog =
+        process.env.NODE_ENV === "development"
+          ? (obj: Record<string, unknown>) => console.log("[inbox conversation]", obj)
+          : () => {};
 
+      devLog({ routeParam: "conversationId", value: conversationId });
+
+      const {
+        data: { user: authUser },
+        error: authErr,
+      } = await supabase.auth.getUser();
+      const authUid = authUser?.id ?? null;
+      const authEmail = authUser?.email ?? null;
+      devLog({ auth: { uid: authUid, email: authEmail, error: authErr?.message } });
+
+      const participantRes = await supabase
+        .from("conversation_participants")
+        .select("conversation_id, user_id")
+        .eq("conversation_id", conversationId)
+        .eq("user_id", uid)
+        .maybeSingle();
+      const participantRow = participantRes.data;
+      const participantErr = participantRes.error;
+      devLog({
+        participantCheck: {
+          data: participantRow,
+          error: participantErr
+            ? { code: participantErr.code, message: participantErr.message, details: (participantErr as { details?: string })?.details }
+            : null,
+        },
+      });
+
+      const convRes = await supabase
+        .from("conversations")
+        .select("id, type, pair_key, contract_id, created_at")
+        .eq("id", conversationId)
+        .maybeSingle();
+      const convData = convRes.data;
+      const convErr = convRes.error;
+      devLog({
+        conversationFetch: {
+          data: convData,
+          error: convErr
+            ? { code: convErr.code, message: convErr.message, details: (convErr as { details?: string })?.details }
+            : null,
+        },
+      });
+
+      const msgRes = await supabase
+        .from("messages")
+        .select("id, text, sender_id, created_at")
+        .eq("conversation_id", conversationId)
+        .order("created_at", { ascending: false })
+        .limit(PAGE_SIZE);
+      const msgRows = (msgRes.data as Message[] | null) ?? [];
+      const msgErr = msgRes.error;
+      devLog({
+        messagesFetch: {
+          count: msgRows.length,
+          error: msgErr
+            ? { code: msgErr.code, message: msgErr.message, details: (msgErr as { details?: string })?.details }
+            : null,
+        },
+      });
+
+      const hasParticipantRow = !!participantRow;
+      const hasConvData = !!convData;
+      const convErrCode = convErr?.code ?? null;
+      const convErrMessage = convErr?.message ?? null;
+      const isPermissionDenied =
+        convErrCode === "42501" || (convErrMessage?.toLowerCase().includes("permission denied") ?? false);
+
+      setDebugInfo({
+        conversationId,
+        authUid,
+        authEmail,
+        authErr: authErr?.message ?? null,
+        convDataYesNo: hasConvData,
+        convErrCode,
+        convErrMessage,
+        participantRowYesNo: hasParticipantRow,
+        messagesCount: msgRows.length,
+      });
+
+      if (!authUid) {
+        setAccessDenied(false);
+        setMeta(null);
+        setLoading(false);
+        return;
+      }
+      if (hasParticipantRow && !hasConvData) {
+        setAccessDenied(false);
+        setMeta(null);
+        setLoading(false);
+        return;
+      }
+      if (!hasParticipantRow) {
+        setAccessDenied(false);
+        setMeta(null);
+        setLoading(false);
+        return;
+      }
+      if (convErr && isPermissionDenied) {
+        setAccessDenied(true);
+        setMeta(null);
+        setLoading(false);
+        return;
+      }
       if (convErr || !convData) {
-        if (process.env.NODE_ENV === "development") {
-          // eslint-disable-next-line no-console
-          console.log("[inbox conversation] load err:", convErr?.message, "convId:", conversationId);
-        }
+        setAccessDenied(false);
         setMeta(null);
         setLoading(false);
         return;
       }
 
+      setAccessDenied(false);
       const c = convData as Record<string, unknown>;
       let otherUserName = "—";
       let jobTitle: string | null = null;
@@ -96,19 +208,17 @@ export default function InboxChatPage() {
       if (c.type === "direct" && c.pair_key) {
         const [a, b] = (c.pair_key as string).split(":");
         otherUserId = a === uid ? b : a;
-      } else if (c.type === "contract" && c.contracts) {
-        const ct = Array.isArray(c.contracts)
-          ? c.contracts[0]
-          : c.contracts;
+      } else if (c.type === "contract" && c.contract_id != null) {
+        const contractId = c.contract_id as number;
+        const { data: contractData } = await supabase
+          .from("contracts")
+          .select("client_id, freelancer_id, jobs(title)")
+          .eq("id", contractId)
+          .maybeSingle();
+        const ct = contractData as { client_id: string; freelancer_id: string; jobs: unknown } | null;
         if (ct) {
-          const typed = ct as {
-            client_id: string;
-            freelancer_id: string;
-            jobs: unknown;
-          };
-          otherUserId =
-            typed.client_id === uid ? typed.freelancer_id : typed.client_id;
-          const jobs = typed.jobs;
+          otherUserId = ct.client_id === uid ? ct.freelancer_id : ct.client_id;
+          const jobs = ct.jobs;
           const job = Array.isArray(jobs) ? jobs[0] : jobs;
           jobTitle = (job as { title?: string })?.title ?? null;
         }
@@ -120,8 +230,7 @@ export default function InboxChatPage() {
           .select("full_name")
           .eq("id", otherUserId)
           .single();
-        otherUserName =
-          (prof as { full_name?: string })?.full_name ?? "—";
+        otherUserName = (prof as { full_name?: string })?.full_name ?? "—";
       }
 
       setMeta({
@@ -132,22 +241,21 @@ export default function InboxChatPage() {
         jobTitle,
       });
 
-      const { data: msgData } = await supabase
-        .from("messages")
-        .select("id, text, sender_id, created_at")
-        .eq("conversation_id", conversationId)
-        .order("created_at", { ascending: false })
-        .limit(PAGE_SIZE);
-
-      const loaded = ((msgData as Message[]) ?? []).reverse();
+      const loaded = [...msgRows].reverse();
       setMessages(loaded);
-      setHasMore(loaded.length === PAGE_SIZE);
+      setHasMore(msgRows.length >= PAGE_SIZE);
       setLoading(false);
-
       markAsRead();
     }
     load();
   }, [user?.id, conversationId, markAsRead]);
+
+  // When access is denied (conversation belongs to another account), redirect immediately so the user never sees that screen.
+  useEffect(() => {
+    if (accessDenied && user) {
+      router.replace("/inbox?new=1");
+    }
+  }, [accessDenied, user, router]);
 
   // Realtime subscription
   useEffect(() => {
@@ -204,7 +312,7 @@ export default function InboxChatPage() {
 
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user || !text.trim() || sending || profile?.deactivated) return;
+    if (!user || !conversationId || !text.trim() || sending || profile?.deactivated) return;
     if (text.length > MAX_MESSAGE_LENGTH) {
       setError("Poruka može imati najviše 2000 karaktera.");
       return;
@@ -212,9 +320,13 @@ export default function InboxChatPage() {
     setError("");
     setSending(true);
 
+    const senderId = user.id;
+    if (process.env.NODE_ENV === "development") {
+      console.log("[inbox send] conversation_id:", conversationId, "sender_id from auth:", senderId);
+    }
     const { error: err } = await supabase.from("messages").insert({
       conversation_id: conversationId,
-      sender_id: user.id,
+      sender_id: senderId,
       text: text.trim(),
     });
 
@@ -234,10 +346,10 @@ export default function InboxChatPage() {
     );
   }
 
-  if (!loading && !meta) {
+  if (!conversationId) {
     return (
       <div style={{ maxWidth: 900, margin: "0 auto" }}>
-        <p>Razgovor nije pronađen.</p>
+        <p style={{ marginBottom: 12 }}>Neispravan ID razgovora.</p>
         <Link href="/inbox" style={{ color: "var(--accent)" }}>
           ← Nazad na Inbox
         </Link>
@@ -245,7 +357,71 @@ export default function InboxChatPage() {
     );
   }
 
+  if (loading) {
+    return (
+      <div style={{ maxWidth: 900, margin: "0 auto" }}>
+        <p style={{ color: "var(--muted)" }}>Učitavanje razgovora...</p>
+      </div>
+    );
+  }
+
+  if (!meta) {
+    let message = "Razgovor nije pronađen.";
+    let linkHref = "/inbox";
+    let linkText = "← Nazad na Inbox";
+    if (debugInfo) {
+      if (!debugInfo.authUid) {
+        message = "Nisi ulogovan.";
+      } else if (debugInfo.participantRowYesNo && !debugInfo.convDataYesNo) {
+        message = "Greška sheme/upita: učesnik postoji, razgovor nije učitan.";
+      } else if (!debugInfo.participantRowYesNo) {
+        message = "Nisi učesnik ovog razgovora.";
+        linkHref = "/inbox?new=1";
+        linkText = "← Započni novi razgovor";
+      } else if (accessDenied) {
+        message = "Nemaš pristup ovom razgovoru.";
+        linkHref = "/inbox?new=1";
+        linkText = "← Započni novi razgovor";
+      }
+    } else if (accessDenied) {
+      message = "Nemaš pristup ovom razgovoru.";
+      linkHref = "/inbox?new=1";
+      linkText = "← Započni novi razgovor";
+    }
+
+    return (
+      <div style={{ maxWidth: 900, margin: "0 auto" }}>
+        <p style={{ marginBottom: 12 }}>{message}</p>
+        <Link href={linkHref} style={{ color: "var(--accent)" }}>
+          {linkText}
+        </Link>
+        {process.env.NODE_ENV === "development" && debugInfo && (
+          <div
+            style={{
+              marginTop: 24,
+              padding: 12,
+              background: "var(--panel2)",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--radius-sm)",
+              fontSize: 12,
+              fontFamily: "monospace",
+            }}
+          >
+            <div><strong>Debug (dev)</strong></div>
+            <div>conversationId: {debugInfo.conversationId}</div>
+            <div>auth uid: {debugInfo.authUid ?? "—"}</div>
+            <div>convData: {debugInfo.convDataYesNo ? "yes" : "no"}</div>
+            <div>convErr: {debugInfo.convErrCode ?? "—"} {debugInfo.convErrMessage ?? ""}</div>
+            <div>participantRow: {debugInfo.participantRowYesNo ? "yes" : "no"}</div>
+            <div>messages count: {debugInfo.messagesCount}</div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
+    <>
     <div
       style={{
         display: "grid",
@@ -260,7 +436,7 @@ export default function InboxChatPage() {
         <h1 style={{ margin: "0 0 16px", fontSize: 22, fontWeight: 600 }}>
           Inbox
         </h1>
-        <InboxSidebar selectedId={conversationId} />
+        <InboxSidebar key={user?.id ?? "anon"} selectedId={conversationId} />
       </div>
 
       <Card
@@ -467,5 +643,28 @@ export default function InboxChatPage() {
         />
       )}
     </div>
+    {process.env.NODE_ENV === "development" && debugInfo && (
+      <div
+        style={{
+          maxWidth: 1000,
+          margin: "24px auto 0",
+          padding: 12,
+          background: "var(--panel2)",
+          border: "1px solid var(--border)",
+          borderRadius: "var(--radius-sm)",
+          fontSize: 12,
+          fontFamily: "monospace",
+        }}
+      >
+        <div><strong>Debug (dev)</strong></div>
+        <div>conversationId: {debugInfo.conversationId}</div>
+        <div>auth uid: {debugInfo.authUid ?? "—"}</div>
+        <div>convData: {debugInfo.convDataYesNo ? "yes" : "no"}</div>
+        <div>convErr: {debugInfo.convErrCode ?? "—"} {debugInfo.convErrMessage ?? ""}</div>
+        <div>participantRow: {debugInfo.participantRowYesNo ? "yes" : "no"}</div>
+        <div>messages count: {debugInfo.messagesCount}</div>
+      </div>
+    )}
+    </>
   );
 }

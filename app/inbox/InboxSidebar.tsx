@@ -31,13 +31,23 @@ export default function InboxSidebar({ selectedId }: Props) {
     if (!user) return;
     const uid = user.id;
 
+    setConversations([]);
+    setLoading(true);
+
     async function load() {
+      if (process.env.NODE_ENV === "development") {
+        console.log("[inbox sidebar] auth uid:", uid);
+      }
+      // Membership-only: conversation_ids from conversation_participants where user_id = auth.uid() only.
       const { data: parts } = await supabase
         .from("conversation_participants")
         .select("conversation_id, last_read_at")
         .eq("user_id", uid);
 
       if (!parts || parts.length === 0) {
+        if (process.env.NODE_ENV === "development") {
+          console.log("[inbox sidebar] fetched conversation_ids: (none)");
+        }
         setConversations([]);
         setLoading(false);
         return;
@@ -46,6 +56,9 @@ export default function InboxSidebar({ selectedId }: Props) {
       const convIds = parts.map(
         (p: { conversation_id: string | number }) => String(p.conversation_id)
       );
+      if (process.env.NODE_ENV === "development") {
+        console.log("[inbox sidebar] fetched conversation_ids from conversation_participants:", convIds);
+      }
       const lastReadMap: Record<string, string> = {};
       parts.forEach(
         (p: { conversation_id: string | number; last_read_at: string }) => {
@@ -53,11 +66,10 @@ export default function InboxSidebar({ selectedId }: Props) {
         }
       );
 
+      // Load conversations where id IN those ids only (no other source).
       const { data: convos } = await supabase
         .from("conversations")
-        .select(
-          "id, type, contract_id, pair_key, created_at, contracts(client_id, freelancer_id, jobs(title))"
-        )
+        .select("id, type, contract_id, pair_key, created_at")
         .in("id", convIds);
 
       if (!convos) {
@@ -68,25 +80,41 @@ export default function InboxSidebar({ selectedId }: Props) {
 
       const otherUserIds = new Set<string>();
       const contractParticipants: Record<string, string> = {};
+      const contractJobTitles: Record<string, string | null> = {};
+      const contractIdsToFetch: number[] = [];
 
       convos.forEach((c: Record<string, unknown>) => {
         if (c.type === "direct" && c.pair_key) {
           const [a, b] = (c.pair_key as string).split(":");
           otherUserIds.add(a === uid ? b : a);
-        } else if (c.type === "contract" && c.contracts) {
-          const ct = Array.isArray(c.contracts)
-            ? c.contracts[0]
-            : c.contracts;
-          if (ct) {
-            const otherId =
-              (ct as { client_id: string }).client_id === uid
-                ? (ct as { freelancer_id: string }).freelancer_id
-                : (ct as { client_id: string }).client_id;
-            otherUserIds.add(otherId);
-            contractParticipants[String(c.id)] = otherId;
-          }
+        } else if (c.type === "contract" && c.contract_id != null) {
+          contractIdsToFetch.push(c.contract_id as number);
         }
       });
+
+      if (contractIdsToFetch.length > 0) {
+        const uniqueContractIds = [...new Set(contractIdsToFetch)];
+        const { data: contractRows } = await supabase
+          .from("contracts")
+          .select("id, client_id, freelancer_id, jobs(title)")
+          .in("id", uniqueContractIds);
+        (contractRows ?? []).forEach((ct: Record<string, unknown>) => {
+          const clientId = ct.client_id as string;
+          const freelancerId = ct.freelancer_id as string;
+          const otherId = clientId === uid ? freelancerId : clientId;
+          const jobs = ct.jobs;
+          const job = Array.isArray(jobs) ? jobs[0] : jobs;
+          const jobTitle = (job as { title?: string })?.title ?? null;
+          otherUserIds.add(otherId);
+          convos
+            .filter((c: Record<string, unknown>) => c.contract_id === ct.id)
+            .forEach((c: Record<string, unknown>) => {
+              const cid = String(c.id);
+              contractParticipants[cid] = otherId;
+              contractJobTitles[cid] = jobTitle;
+            });
+        });
+      }
 
       const profileIds = [...otherUserIds];
       let profileMap: Record<string, string> = {};
@@ -140,25 +168,18 @@ export default function InboxSidebar({ selectedId }: Props) {
         (c: Record<string, unknown>) => {
           let otherName = "—";
           let jobTitle: string | null = null;
+          const cid = String(c.id);
 
           if (c.type === "direct" && c.pair_key) {
             const [a, b] = (c.pair_key as string).split(":");
             const otherId = a === uid ? b : a;
             otherName = profileMap[otherId] ?? "—";
-          } else           if (c.type === "contract" && c.contracts) {
-            const ct = Array.isArray(c.contracts)
-              ? c.contracts[0]
-              : c.contracts;
-            if (ct) {
-              const otherId = contractParticipants[String(c.id)];
-              otherName = profileMap[otherId ?? ""] ?? "—";
-              const jobs = (ct as { jobs: unknown }).jobs;
-              const job = Array.isArray(jobs) ? jobs[0] : jobs;
-              jobTitle = (job as { title?: string })?.title ?? null;
-            }
+          } else if (c.type === "contract") {
+            const otherId = contractParticipants[cid];
+            if (otherId) otherName = profileMap[otherId] ?? "—";
+            jobTitle = contractJobTitles[cid] ?? null;
           }
 
-          const cid = String(c.id);
           return {
             id: cid,
             type: c.type as string,
@@ -183,8 +204,8 @@ export default function InboxSidebar({ selectedId }: Props) {
       setConversations(items);
       setLoading(false);
       if (process.env.NODE_ENV === "development") {
-        // eslint-disable-next-line no-console
-        console.log("[inbox sidebar] conversations:", items.length, "uid:", uid);
+        const renderedIds = items.map((i) => i.id);
+        console.log("[inbox sidebar] final rendered conversation IDs (links use only these):", renderedIds);
       }
     }
 
