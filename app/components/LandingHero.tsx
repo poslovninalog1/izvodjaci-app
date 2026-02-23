@@ -17,8 +17,9 @@ const RED_PIN_SVG =
 export default function LandingHero() {
   const router = useRouter();
   const mapContainerRef = useRef<HTMLDivElement>(null);
-  const mapRef = useRef<{ remove: () => void } | null>(null);
-  const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const mapRef = useRef<any>(null);
+  const timersRef = useRef<number[]>([]);
 
   useEffect(() => {
     if (!mapContainerRef.current || typeof window === "undefined") return;

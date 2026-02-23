@@ -12,6 +12,7 @@ type NavItem = { href: string; label: string; auth?: boolean; role?: "client" | 
 
 const NAV_ITEMS: NavItem[] = [
   { href: "/jobs", label: "Poslovi" },
+  { href: "/community", label: "Zajednica" },
   { href: "/inbox", label: "Inbox", auth: true },
   { href: "/contracts", label: "Ugovori", auth: true },
   { href: "/client/jobs", label: "Moji poslovi", auth: true, role: "client" },

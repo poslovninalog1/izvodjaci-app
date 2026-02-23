@@ -4,102 +4,197 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useAuth } from "../context/AuthContext";
 import { supabase } from "@/src/lib/supabaseClient";
+import { relativeTime } from "@/src/lib/time";
 import Card from "../components/ui/Card";
 
-type Conversation = {
-  id: number;
-  contract_id: number;
+type ConversationItem = {
+  id: string;
+  type: string;
+  contract_id: number | null;
+  pair_key: string | null;
   created_at: string;
-  contracts: {
-    client_id: string;
-    freelancer_id: string;
-    jobs: unknown;
-  } | unknown;
+  otherUserName: string;
+  jobTitle: string | null;
+  lastMessageText: string | null;
+  lastMessageAt: string | null;
+  unreadCount: number;
 };
 
-type Props = { selectedId?: number };
+type Props = { selectedId?: string };
 
 export default function InboxSidebar({ selectedId }: Props) {
   const { user } = useAuth();
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [lastMessages, setLastMessages] = useState<Record<number, { text: string; created_at: string }>>({});
-  const [counterpartNames, setCounterpartNames] = useState<Record<string, string>>({});
+  const [conversations, setConversations] = useState<ConversationItem[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (!user) return;
     const uid = user.id;
-    async function load() {
-      const { data: convData, error: convErr } = await supabase
-        .from("conversations")
-        .select("id, contract_id, created_at, contracts(client_id, freelancer_id, jobs(title))")
-        .order("created_at", { ascending: false });
 
-      if (convErr) {
+    async function load() {
+      const { data: parts } = await supabase
+        .from("conversation_participants")
+        .select("conversation_id, last_read_at")
+        .eq("user_id", uid);
+
+      if (!parts || parts.length === 0) {
         setConversations([]);
         setLoading(false);
         return;
       }
 
-      const list = (convData ?? []) as Conversation[];
-      const filtered = list.filter((c) => {
-        const ct = (Array.isArray(c.contracts) ? c.contracts[0] : c.contracts) as { client_id?: string; freelancer_id?: string } | null;
-        if (!ct) return false;
-        return ct.client_id === uid || ct.freelancer_id === uid;
+      const convIds = parts.map(
+        (p: { conversation_id: string | number }) => String(p.conversation_id)
+      );
+      const lastReadMap: Record<string, string> = {};
+      parts.forEach(
+        (p: { conversation_id: string | number; last_read_at: string }) => {
+          lastReadMap[String(p.conversation_id)] = p.last_read_at;
+        }
+      );
+
+      const { data: convos } = await supabase
+        .from("conversations")
+        .select(
+          "id, type, contract_id, pair_key, created_at, contracts(client_id, freelancer_id, jobs(title))"
+        )
+        .in("id", convIds);
+
+      if (!convos) {
+        setConversations([]);
+        setLoading(false);
+        return;
+      }
+
+      const otherUserIds = new Set<string>();
+      const contractParticipants: Record<string, string> = {};
+
+      convos.forEach((c: Record<string, unknown>) => {
+        if (c.type === "direct" && c.pair_key) {
+          const [a, b] = (c.pair_key as string).split(":");
+          otherUserIds.add(a === uid ? b : a);
+        } else if (c.type === "contract" && c.contracts) {
+          const ct = Array.isArray(c.contracts)
+            ? c.contracts[0]
+            : c.contracts;
+          if (ct) {
+            const otherId =
+              (ct as { client_id: string }).client_id === uid
+                ? (ct as { freelancer_id: string }).freelancer_id
+                : (ct as { client_id: string }).client_id;
+            otherUserIds.add(otherId);
+            contractParticipants[String(c.id)] = otherId;
+          }
+        }
       });
 
-      setConversations(filtered);
-
-      const convIds = filtered.map((c) => c.id);
-      if (convIds.length > 0) {
-        const { data: msgData } = await supabase
-          .from("messages")
-          .select("conversation_id, text, created_at")
-          .in("conversation_id", convIds)
-          .order("created_at", { ascending: false });
-
-        const latest: Record<number, { text: string; created_at: string }> = {};
-        (msgData ?? []).forEach((m: { conversation_id: number; text: string; created_at: string }) => {
-          if (!latest[m.conversation_id]) latest[m.conversation_id] = { text: m.text, created_at: m.created_at };
-        });
-        setLastMessages(latest);
+      const profileIds = [...otherUserIds];
+      let profileMap: Record<string, string> = {};
+      if (profileIds.length > 0) {
+        const { data: profiles } = await supabase
+          .from("profiles")
+          .select("id, full_name")
+          .in("id", profileIds);
+        (profiles ?? []).forEach(
+          (p: { id: string; full_name: string | null }) => {
+            profileMap[p.id] = p.full_name ?? "—";
+          }
+        );
       }
 
-      const ids = [...new Set(filtered.flatMap((c) => {
-        const ct = (Array.isArray(c.contracts) ? c.contracts[0] : c.contracts) as { client_id?: string; freelancer_id?: string } | null;
-        if (!ct) return [];
-        return [ct.client_id, ct.freelancer_id].filter((x): x is string => !!x && x !== uid);
-      }))];
-      if (ids.length > 0) {
-        const { data: profData } = await supabase.from("profiles").select("id, full_name").in("id", ids);
-        const map: Record<string, string> = {};
-        (profData ?? []).forEach((p: { id: string; full_name: string | null }) => {
-          map[p.id] = p.full_name ?? "—";
-        });
-        setCounterpartNames(map);
-      }
+      const { data: msgs } = await supabase
+        .from("messages")
+        .select("conversation_id, text, created_at")
+        .in("conversation_id", convIds)
+        .order("created_at", { ascending: false });
 
+      const lastMsgMap: Record<
+        string,
+        { text: string; created_at: string }
+      > = {};
+      (msgs ?? []).forEach(
+        (m: {
+          conversation_id: string | number;
+          text: string;
+          created_at: string;
+        }) => {
+          const cid = String(m.conversation_id);
+          if (!lastMsgMap[cid]) {
+            lastMsgMap[cid] = {
+              text: m.text,
+              created_at: m.created_at,
+            };
+          }
+        }
+      );
+
+      const { data: unreads } = await supabase.rpc("get_unread_counts");
+      const unreadMap: Record<string, number> = {};
+      (
+        (unreads as { conversation_id: string; unread_count: number }[]) ?? []
+      ).forEach((u) => {
+        unreadMap[String(u.conversation_id)] = Number(u.unread_count);
+      });
+
+      const items: ConversationItem[] = convos.map(
+        (c: Record<string, unknown>) => {
+          let otherName = "—";
+          let jobTitle: string | null = null;
+
+          if (c.type === "direct" && c.pair_key) {
+            const [a, b] = (c.pair_key as string).split(":");
+            const otherId = a === uid ? b : a;
+            otherName = profileMap[otherId] ?? "—";
+          } else           if (c.type === "contract" && c.contracts) {
+            const ct = Array.isArray(c.contracts)
+              ? c.contracts[0]
+              : c.contracts;
+            if (ct) {
+              const otherId = contractParticipants[String(c.id)];
+              otherName = profileMap[otherId ?? ""] ?? "—";
+              const jobs = (ct as { jobs: unknown }).jobs;
+              const job = Array.isArray(jobs) ? jobs[0] : jobs;
+              jobTitle = (job as { title?: string })?.title ?? null;
+            }
+          }
+
+          const cid = String(c.id);
+          return {
+            id: cid,
+            type: c.type as string,
+            contract_id: c.contract_id as number | null,
+            pair_key: c.pair_key as string | null,
+            created_at: c.created_at as string,
+            otherUserName: otherName,
+            jobTitle,
+            lastMessageText: lastMsgMap[cid]?.text ?? null,
+            lastMessageAt: lastMsgMap[cid]?.created_at ?? null,
+            unreadCount: unreadMap[cid] ?? 0,
+          };
+        }
+      );
+
+      items.sort((a, b) => {
+        const ta = a.lastMessageAt ?? a.created_at;
+        const tb = b.lastMessageAt ?? b.created_at;
+        return new Date(tb).getTime() - new Date(ta).getTime();
+      });
+
+      setConversations(items);
       setLoading(false);
+      if (process.env.NODE_ENV === "development") {
+        // eslint-disable-next-line no-console
+        console.log("[inbox sidebar] conversations:", items.length, "uid:", uid);
+      }
     }
+
     load();
   }, [user?.id]);
 
-  const getJobTitle = (c: Conversation) => {
-    const ct = (Array.isArray(c.contracts) ? c.contracts[0] : c.contracts) as { jobs?: unknown } | null;
-    if (!ct?.jobs) return "—";
-    const j = ct.jobs;
-    if (Array.isArray(j)) return (j[0] as { title?: string })?.title ?? "—";
-    return (j as { title?: string })?.title ?? "—";
-  };
+  if (loading) {
+    return <p style={{ color: "var(--muted)" }}>Učitavanje...</p>;
+  }
 
-  const getCounterpartName = (c: Conversation) => {
-    const ct = (Array.isArray(c.contracts) ? c.contracts[0] : c.contracts) as { client_id?: string; freelancer_id?: string } | null;
-    if (!ct) return "—";
-    const id = ct.client_id === user?.id ? ct.freelancer_id : ct.client_id;
-    return id ? (counterpartNames[id] ?? "—") : "—";
-  };
-
-  if (loading) return <p style={{ color: "var(--muted)" }}>Učitavanje...</p>;
   if (conversations.length === 0) {
     return (
       <Card>
@@ -109,36 +204,111 @@ export default function InboxSidebar({ selectedId }: Props) {
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       {conversations.map((c) => {
         const active = selectedId === c.id;
+        const snippet = c.lastMessageText
+          ? c.lastMessageText.length > 60
+            ? c.lastMessageText.slice(0, 60) + "…"
+            : c.lastMessageText
+          : null;
+
         return (
-          <Link key={c.id} href={`/inbox/${c.id}`}>
+          <Link
+            key={c.id}
+            href={`/inbox/${c.id}`}
+            style={{ textDecoration: "none" }}
+          >
             <Card
               style={{
-                padding: 16,
+                padding: "12px 16px",
                 borderColor: active ? "var(--accent)" : undefined,
-                background: active ? "var(--panel2)" : undefined,
+                background: active ? "rgba(220,38,38,0.04)" : undefined,
+                cursor: "pointer",
+                transition: "border-color 0.15s, background 0.15s",
               }}
             >
-              <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
-                <div>
-                  <strong style={{ fontSize: 15 }}>{getJobTitle(c)}</strong>
-                  <p style={{ margin: "4px 0 0", fontSize: 13, color: "var(--muted)" }}>{getCounterpartName(c)}</p>
-                  {lastMessages[c.id] && (
-                    <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--muted)" }}>
-                      {(lastMessages[c.id].text || "").slice(0, 50)}
-                      {(lastMessages[c.id].text?.length ?? 0) > 50 ? "…" : ""}
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "flex-start",
+                  gap: 8,
+                }}
+              >
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: 15,
+                        fontWeight: c.unreadCount > 0 ? 700 : 500,
+                        color: "var(--text)",
+                      }}
+                    >
+                      {c.otherUserName}
+                    </span>
+                    {c.unreadCount > 0 && (
+                      <span
+                        style={{
+                          background: "var(--accent)",
+                          color: "#fff",
+                          fontSize: 11,
+                          fontWeight: 600,
+                          padding: "1px 7px",
+                          borderRadius: 10,
+                          lineHeight: "18px",
+                        }}
+                      >
+                        {c.unreadCount}
+                      </span>
+                    )}
+                  </div>
+                  {c.jobTitle && (
+                    <p
+                      style={{
+                        margin: "2px 0 0",
+                        fontSize: 12,
+                        color: "var(--accent)",
+                      }}
+                    >
+                      {c.jobTitle}
+                    </p>
+                  )}
+                  {snippet && (
+                    <p
+                      style={{
+                        margin: "4px 0 0",
+                        fontSize: 13,
+                        color: "var(--muted)",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {snippet}
                     </p>
                   )}
                 </div>
-                <div style={{ fontSize: 12, color: "var(--muted)" }}>
-                  {lastMessages[c.id]?.created_at
-                    ? new Date(lastMessages[c.id].created_at).toLocaleDateString("sr-Latn")
+                <span
+                  style={{
+                    fontSize: 12,
+                    color: "var(--muted)",
+                    whiteSpace: "nowrap",
+                    flexShrink: 0,
+                  }}
+                >
+                  {c.lastMessageAt
+                    ? relativeTime(c.lastMessageAt)
                     : c.created_at
-                      ? new Date(c.created_at).toLocaleDateString("sr-Latn")
+                      ? relativeTime(c.created_at)
                       : "—"}
-                </div>
+                </span>
               </div>
             </Card>
           </Link>
