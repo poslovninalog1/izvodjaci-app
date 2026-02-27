@@ -12,7 +12,7 @@ import Button from "../../../../components/ui/Button";
 import Textarea from "../../../../components/ui/Textarea";
 import { sr } from "@/src/lib/strings/sr";
 
-type Proposal = {
+type ProposalRow = {
   id: number;
   freelancer_id: string;
   job_id: number;
@@ -22,7 +22,8 @@ type Proposal = {
   status: string | null;
   rejection_reason: string | null;
   created_at: string;
-  profiles: unknown;
+  job_title?: string | null;
+  freelancer_name?: string | null;
 };
 
 type Job = {
@@ -30,7 +31,7 @@ type Job = {
   title: string | null;
   client_id: string | null;
   status: string | null;
-  decision_deadline: string | null;
+  decision_deadline?: string | null;
 };
 
 function getDeadlineInfo(deadline: string | null): { text: string; expired: boolean } | null {
@@ -51,7 +52,7 @@ export default function ClientProposalsPage() {
   const jobId = params.id as string;
 
   const [job, setJob] = useState<Job | null>(null);
-  const [proposals, setProposals] = useState<Proposal[]>([]);
+  const [proposals, setProposals] = useState<ProposalRow[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [rejectingId, setRejectingId] = useState<number | null>(null);
@@ -91,14 +92,19 @@ export default function ClientProposalsPage() {
         setJob(jobData as Job);
 
         const { data: propData, error: propErr } = await supabase
-          .from("proposals")
-          .select("id, freelancer_id, job_id, cover_letter, proposed_rate, proposed_fixed, status, rejection_reason, created_at, profiles(full_name)")
+          .from("v_proposals")
+          .select("*")
           .eq("job_id", jobId)
           .order("created_at", { ascending: false });
 
         if (cancelled) return;
-        if (propErr) setProposals([]);
-        else setProposals((propData as unknown as Proposal[]) ?? []);
+        if (propErr) {
+          if (process.env.NODE_ENV === "development") console.debug("[client/proposals] v_proposals fetch error:", propErr.message);
+          setProposals([]);
+        } else {
+          if (process.env.NODE_ENV === "development") console.debug("[client/proposals] v_proposals fetch", { count: propData?.length ?? 0 });
+          setProposals((propData as unknown as ProposalRow[]) ?? []);
+        }
       } catch (err) {
         if (!cancelled) {
           console.error("[client/proposals] fetch error:", err);
@@ -113,7 +119,7 @@ export default function ClientProposalsPage() {
     return () => { cancelled = true; };
   }, [user?.id, jobId]);
 
-  const handleAccept = async (p: Proposal) => {
+  const handleAccept = async (p: ProposalRow) => {
     if (!user || actionLoading) return;
     setActionLoading(true);
 
@@ -243,12 +249,11 @@ export default function ClientProposalsPage() {
     return <Badge variant="accent">{sr.statusPending}</Badge>;
   };
 
-  const getProfileName = (p: Proposal) => {
-    const prof = p.profiles;
-    if (!prof) return "—";
-    if (Array.isArray(prof)) return (prof[0] as { full_name?: string })?.full_name ?? "—";
-    return (prof as { full_name?: string })?.full_name ?? "—";
-  };
+  const getDisplayName = (p: ProposalRow) =>
+    (p.freelancer_name && String(p.freelancer_name).trim()) || "—";
+
+  const getInitial = (name: string) =>
+    name && name !== "—" ? name.trim().charAt(0).toUpperCase() : "?";
 
   if (authLoading || !user || profile?.role !== "client") {
     return (
@@ -293,10 +298,27 @@ export default function ClientProposalsPage() {
           {proposals.map((p) => (
             <Card key={p.id} style={{ padding: 20 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
-                <div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span
+                    style={{
+                      width: 36,
+                      height: 36,
+                      borderRadius: "50%",
+                      background: "var(--panel2)",
+                      border: "1px solid var(--border)",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: 14,
+                      fontWeight: 600,
+                      color: "var(--muted)",
+                    }}
+                  >
+                    {getInitial(getDisplayName(p))}
+                  </span>
                   <strong>
                     <Link href={`/izvodjac/${p.freelancer_id}`} style={{ color: "inherit", textDecoration: "none" }}>
-                      {getProfileName(p)}
+                      {getDisplayName(p)}
                     </Link>
                   </strong>
                   <span style={{ marginLeft: 10 }}>{getStatusBadge(p.status)}</span>

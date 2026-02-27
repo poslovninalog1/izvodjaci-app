@@ -11,16 +11,18 @@ import Badge from "../../components/ui/Badge";
 import Button from "../../components/ui/Button";
 import { sr } from "@/src/lib/strings/sr";
 
-type Proposal = {
+type ProposalRow = {
   id: number;
   job_id: number;
+  freelancer_id?: string;
   cover_letter: string | null;
   proposed_rate: number | null;
   proposed_fixed: number | null;
   status: string | null;
   rejection_reason: string | null;
   created_at: string;
-  jobs: unknown;
+  job_title?: string | null;
+  freelancer_name?: string | null;
 };
 
 export default function FreelancerProposalsPage() {
@@ -28,7 +30,7 @@ export default function FreelancerProposalsPage() {
   const { user, profile, loading: authLoading } = useAuth();
   const toast = useToast();
 
-  const [proposals, setProposals] = useState<Proposal[]>([]);
+  const [proposals, setProposals] = useState<ProposalRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [withdrawingId, setWithdrawingId] = useState<number | null>(null);
 
@@ -51,14 +53,19 @@ export default function FreelancerProposalsPage() {
     async function load() {
       try {
         const { data, error } = await supabase
-          .from("proposals")
-          .select("id, job_id, cover_letter, proposed_rate, proposed_fixed, status, rejection_reason, created_at, jobs(title)")
+          .from("v_proposals")
+          .select("*")
           .eq("freelancer_id", uid)
           .order("created_at", { ascending: false });
 
         if (cancelled) return;
-        if (error) setProposals([]);
-        else setProposals((data as unknown as Proposal[]) ?? []);
+        if (error) {
+          if (process.env.NODE_ENV === "development") console.debug("[freelancer/proposals] v_proposals fetch error:", error.message);
+          setProposals([]);
+        } else {
+          if (process.env.NODE_ENV === "development") console.debug("[freelancer/proposals] v_proposals fetch", { count: data?.length ?? 0 });
+          setProposals((data as unknown as ProposalRow[]) ?? []);
+        }
       } catch (err) {
         if (!cancelled) {
           console.error("[freelancer/proposals] fetch error:", err);
@@ -110,12 +117,7 @@ export default function FreelancerProposalsPage() {
     return <Badge variant="muted">{s ?? "—"}</Badge>;
   };
 
-  const getJobTitle = (p: Proposal) => {
-    const j = p.jobs;
-    if (!j) return "—";
-    if (Array.isArray(j)) return (j[0] as { title?: string })?.title ?? "—";
-    return (j as { title?: string })?.title ?? "—";
-  };
+  const getJobTitle = (p: ProposalRow) => (p.job_title && String(p.job_title).trim()) || "—";
 
   if (authLoading || !user || profile?.role !== "freelancer") {
     return (
@@ -149,7 +151,7 @@ export default function FreelancerProposalsPage() {
                 </tr>
               </thead>
               <tbody>
-                {proposals.map((p) => (
+                {proposals.map((p: ProposalRow) => (
                   <tr key={p.id} style={{ borderBottom: "1px solid var(--border)" }}>
                     <td style={{ padding: 14 }}>
                       <Link href={`/jobs/${p.job_id}`} style={{ color: "inherit", textDecoration: "none", fontWeight: 500 }}>

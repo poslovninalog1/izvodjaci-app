@@ -15,7 +15,6 @@ type Job = {
   title: string | null;
   status: string | null;
   created_at: string;
-  decision_deadline: string | null;
 };
 
 export default function ClientJobsPage() {
@@ -41,9 +40,12 @@ export default function ClientJobsPage() {
     const uid = user.id;
     async function load() {
       try {
+        if (process.env.NODE_ENV === "development") {
+          console.log("[client/jobs] auth.uid():", uid, "filter: client_id =", uid);
+        }
         const { data, error } = await supabase
           .from("jobs")
-          .select("id, title, status, created_at, decision_deadline")
+          .select("id, title, status, created_at")
           .eq("client_id", uid)
           .order("created_at", { ascending: false });
 
@@ -71,16 +73,6 @@ export default function ClientJobsPage() {
     return <Badge variant="muted">{s ?? "—"}</Badge>;
   };
 
-  const getDeadlineText = (d: string | null) => {
-    if (!d) return null;
-    const diff = new Date(d).getTime() - Date.now();
-    if (diff <= 0) return sr.deadlineExpired;
-    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-    const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-    if (days > 0) return `${days}d ${hours}h`;
-    return `${hours}h`;
-  };
-
   if (authLoading || !user || profile?.role !== "client") {
     return (
       <div style={{ maxWidth: 900, margin: "0 auto" }}>
@@ -101,6 +93,9 @@ export default function ClientJobsPage() {
       ) : jobs.length === 0 ? (
         <Card>
           <p style={{ margin: 0, color: "var(--muted)" }}>{sr.noClientJobs}</p>
+          <p style={{ margin: "8px 0 0", fontSize: 14 }}>
+            <Link href="/jobs/new" style={{ color: "var(--accent)" }}>Kreiraj novi posao</Link> da bi se pojavio ovde.
+          </p>
         </Card>
       ) : (
         <Card style={{ padding: 0, overflow: "hidden" }}>
@@ -110,15 +105,12 @@ export default function ClientJobsPage() {
                 <tr style={{ borderBottom: "1px solid var(--border)", textAlign: "left" }}>
                   <th style={{ padding: 14, fontSize: 13, fontWeight: 600 }}>Naslov</th>
                   <th style={{ padding: 14, fontSize: 13, fontWeight: 600 }}>Status</th>
-                  <th style={{ padding: 14, fontSize: 13, fontWeight: 600 }}>Rok</th>
                   <th style={{ padding: 14, fontSize: 13, fontWeight: 600 }}>Datum</th>
                   <th style={{ padding: 14, fontSize: 13, fontWeight: 600 }}>Akcije</th>
                 </tr>
               </thead>
               <tbody>
-                {jobs.map((job) => {
-                  const dl = job.status === "published" ? getDeadlineText(job.decision_deadline) : null;
-                  return (
+                {jobs.map((job) => (
                     <tr key={job.id} style={{ borderBottom: "1px solid var(--border)" }}>
                       <td style={{ padding: 14 }}>
                         <Link href={`/jobs/${job.id}`} style={{ color: "inherit", textDecoration: "none", fontWeight: 500 }}>
@@ -126,9 +118,6 @@ export default function ClientJobsPage() {
                         </Link>
                       </td>
                       <td style={{ padding: 14 }}>{getStatusBadge(job.status)}</td>
-                      <td style={{ padding: 14, fontSize: 13, color: dl === sr.deadlineExpired ? "var(--danger)" : "var(--muted)" }}>
-                        {dl ?? "—"}
-                      </td>
                       <td style={{ padding: 14, color: "var(--muted)", fontSize: 14 }}>
                         {job.created_at ? new Date(job.created_at).toLocaleDateString("sr-Latn") : "—"}
                       </td>
@@ -143,8 +132,7 @@ export default function ClientJobsPage() {
                         </span>
                       </td>
                     </tr>
-                  );
-                })}
+                ))}
               </tbody>
             </table>
           </div>

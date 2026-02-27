@@ -19,3 +19,22 @@ const CONVERSATION_ID_REGEX = /^[0-9]+$/;
 export function isValidConversationId(id: unknown): id is string {
   return typeof id === "string" && id.length > 0 && CONVERSATION_ID_REGEX.test(id);
 }
+
+/** Message type for attachments derived from MIME. */
+export type AttachmentMessageType = "image" | "video" | "audio" | "file";
+
+export function getMessageTypeFromMime(mime: string): AttachmentMessageType {
+  if (!mime || typeof mime !== "string") return "file";
+  const lower = mime.toLowerCase().trim();
+  if (lower.startsWith("image/")) return "image";
+  if (lower.startsWith("video/")) return "video";
+  if (lower.startsWith("audio/")) return "audio";
+  return "file";
+}
+
+/** Sanitize filename for storage path: basename, safe chars only. */
+export function sanitizeFilename(filename: string): string {
+  if (!filename || typeof filename !== "string") return "file";
+  const base = filename.replace(/^.*[/\\]/, "").trim() || "file";
+  return base.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 200);
+}

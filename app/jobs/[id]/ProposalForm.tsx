@@ -69,23 +69,27 @@ export default function ProposalForm({ jobId, budgetType }: Props) {
     }
 
     setSubmitting(true);
-    const payload = {
-      job_id: jobId,
+    // Only columns that exist in public.proposals (id, job_id, freelancer_id, cover_letter, proposed_rate, proposed_fixed, status, created_at; + rejection_reason if 00013 applied)
+    const payload: Record<string, unknown> = {
+      job_id: Number(jobId),
       freelancer_id: user.id,
       cover_letter: coverLetter.trim(),
       proposed_fixed: isFixed ? Number(proposedFixed) : null,
       proposed_rate: !isFixed ? Number(proposedRate) : null,
-      // "submitted" matches the existing DB check constraint (migration 00003).
-      // Once migration 00013 is applied, change this to "pending".
       status: "submitted",
     };
 
     try {
-      const { error: err } = await supabase.from("proposals").insert([payload]);
+      const { data: inserted, error: err } = await supabase.from("proposals").insert([payload]).select("id").single();
+      if (process.env.NODE_ENV === "development") {
+        console.debug("[proposals insert]", { payload: { job_id: payload.job_id, freelancer_id: payload.freelancer_id, status: payload.status }, readRow: inserted, readErr: err ? { message: err.message, code: err.code } : null });
+      }
       if (err) {
         if (err.code === "23505") {
           setError("Već si poslao ponudu na ovaj posao.");
           setExistingProposal({ id: 0 });
+        } else if (err.code === "42501" || err.message?.toLowerCase().includes("policy") || err.message?.toLowerCase().includes("row level")) {
+          setError("Nemaš dozvolu da pošalješ ponudu (proveri da li si prijavljen kao izvođač).");
         } else {
           setError("Greška: " + err.message);
         }

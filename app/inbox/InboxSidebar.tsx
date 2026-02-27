@@ -20,9 +20,9 @@ type ConversationItem = {
   unreadCount: number;
 };
 
-type Props = { selectedId?: string };
+type Props = { selectedId?: string; refreshTrigger?: number };
 
-export default function InboxSidebar({ selectedId }: Props) {
+export default function InboxSidebar({ selectedId, refreshTrigger }: Props) {
   const { user } = useAuth();
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -156,13 +156,17 @@ export default function InboxSidebar({ selectedId }: Props) {
         }
       );
 
-      const { data: unreads } = await supabase.rpc("get_unread_counts");
+      const { data: unreads, error: unreadErr } = await supabase
+        .from("v_unread_counts")
+        .select("conversation_id, unread_count")
+        .eq("user_id", uid);
       const unreadMap: Record<string, number> = {};
-      (
-        (unreads as { conversation_id: string; unread_count: number }[]) ?? []
-      ).forEach((u) => {
+      ((unreads as { conversation_id: string | number; unread_count: number }[]) ?? []).forEach((u) => {
         unreadMap[String(u.conversation_id)] = Number(u.unread_count);
       });
+      if (process.env.NODE_ENV === "development") {
+        console.debug("[unread view]", { error: unreadErr ? { message: unreadErr.message, code: unreadErr.code } : null, data: unreads });
+      }
 
       const items: ConversationItem[] = convos.map(
         (c: Record<string, unknown>) => {
@@ -210,7 +214,7 @@ export default function InboxSidebar({ selectedId }: Props) {
     }
 
     load();
-  }, [user?.id]);
+  }, [user?.id, selectedId, refreshTrigger]);
 
   if (loading) {
     return <p style={{ color: "var(--muted)" }}>Učitavanje...</p>;
@@ -268,13 +272,13 @@ export default function InboxSidebar({ selectedId }: Props) {
                     <span
                       style={{
                         fontSize: 15,
-                        fontWeight: c.unreadCount > 0 ? 700 : 500,
+                        fontWeight: (selectedId === c.id ? 0 : c.unreadCount) > 0 ? 700 : 500,
                         color: "var(--text)",
                       }}
                     >
                       {c.otherUserName}
                     </span>
-                    {c.unreadCount > 0 && (
+                    {selectedId !== c.id && c.unreadCount > 0 && (
                       <span
                         style={{
                           background: "var(--accent)",

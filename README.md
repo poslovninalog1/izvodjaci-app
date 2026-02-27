@@ -171,6 +171,19 @@ Runs on port 3001.
 - Apply locally: `npm run supabase:reset`.
 - Commit the new migration file(s). Never edit migrations that have already been applied.
 
+### View grants (if inbox unread or proposals list fails)
+
+If the app logs **permission denied for relation v_unread_counts** or **permission denied for relation v_proposals** (or "relation ... does not exist"), run the following in the Supabase SQL editor (Dashboard → SQL). Do **not** add these as repo migrations if your views were created outside migrations.
+
+```sql
+-- Allow authenticated users to read the unread-count and proposals views
+GRANT USAGE ON SCHEMA public TO authenticated;
+GRANT SELECT ON public.v_unread_counts TO authenticated;
+GRANT SELECT ON public.v_proposals TO authenticated;
+```
+
+**Root cause found (fill after reproducing):** Open browser Console + Network. On `/inbox/[conversationId]` look for `[mark-read]`: if `readRow` is null or `readErr` is set, that is the cause (e.g. RLS blocks update, or wrong conversationId). On sidebar load look for `[unread view]`: if `error` is set (e.g. "permission denied for relation v_unread_counts" or "relation v_unread_counts does not exist"), run the GRANTs above. On proposal submit look for `[proposals insert]`: if `readErr` is set (e.g. "new row violates row-level security policy" or "column ... does not exist"), fix RLS or payload columns.
+
 ---
 
 ## Deploy to Cloud
