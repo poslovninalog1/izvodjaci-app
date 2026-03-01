@@ -3,7 +3,7 @@
 import { useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { supabase } from "@/src/lib/supabaseClient";
+import { supabase } from "@/src/lib/supabase/client";
 import { useAuth } from "../context/AuthContext";
 import Logo from "../components/Logo";
 import Card from "../components/ui/Card";
@@ -26,22 +26,37 @@ function RegisterForm() {
     e.preventDefault();
     setError("");
     setLoading(true);
-    const { error: err } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: { full_name: fullName || undefined },
-      },
-    });
-    setLoading(false);
-    if (err) {
-      setError(err.message);
-      return;
+    try {
+      const { error: err } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: { full_name: fullName || undefined },
+        },
+      });
+      if (err) {
+        console.error("[register] signUp error:", err.message);
+        setError(err.message);
+        return;
+      }
+      const { data: { user: u } } = await supabase.auth.getUser();
+      if (u) await refreshProfile(u.id);
+      router.push(next);
+      router.refresh();
+    } catch (err) {
+      console.error("[register] fetch error:", err);
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("fetch") || msg.includes("Failed to fetch") || msg.includes("NetworkError")) {
+        setError(
+          "Neuspješan kontakt sa Supabase URL-om. Provjeri NEXT_PUBLIC_SUPABASE_URL " +
+          "i da li je Supabase projekat aktivan."
+        );
+      } else {
+        setError(msg);
+      }
+    } finally {
+      setLoading(false);
     }
-    const { data: { user: u } } = await supabase.auth.getUser();
-    if (u) await refreshProfile(u.id);
-    router.push(next);
-    router.refresh();
   };
 
   return (

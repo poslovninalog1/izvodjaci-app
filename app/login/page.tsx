@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, Suspense } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { supabase } from "@/src/lib/supabaseClient";
+import { supabase } from "@/src/lib/supabase/client";
 import { useAuth } from "../context/AuthContext";
 import Logo from "../components/Logo";
 import Card from "../components/ui/Card";
@@ -21,23 +21,47 @@ function LoginForm() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
+  useEffect(() => {
+    if (process.env.NODE_ENV === "development") {
+      fetch("/api/health/supabase")
+        .then((r) => r.json())
+        .then((d) => console.log("[login] supabase health:", d))
+        .catch(() => {});
+    }
+  }, []);
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
     setLoading(true);
-    const { error: err } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
-    setLoading(false);
-    if (err) {
-      setError(err.message);
-      return;
+    try {
+      const { error: err } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+      if (err) {
+        console.error("[login] signIn error:", err.message);
+        setError(err.message);
+        return;
+      }
+      const { data: { user: u } } = await supabase.auth.getUser();
+      if (u) await refreshProfile(u.id);
+      router.push(next);
+      router.refresh();
+    } catch (err) {
+      console.error("[login] fetch error:", err);
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("fetch") || msg.includes("Failed to fetch") || msg.includes("NetworkError")) {
+        setError(
+          "Neuspješan kontakt sa Supabase URL-om. Provjeri NEXT_PUBLIC_SUPABASE_URL " +
+          "i da li je Supabase projekat aktivan."
+        );
+      } else {
+        setError(msg);
+      }
+    } finally {
+      setLoading(false);
     }
-    const { data: { user: u } } = await supabase.auth.getUser();
-    if (u) await refreshProfile(u.id);
-    router.push(next);
-    router.refresh();
   };
 
   return (

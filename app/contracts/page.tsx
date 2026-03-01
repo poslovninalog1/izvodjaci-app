@@ -11,7 +11,7 @@ import { sr } from "@/src/lib/strings/sr";
 
 type Contract = {
   id: number;
-  job_id: number;
+  job_id: string;
   client_id: string;
   freelancer_id: string;
   status: string | null;
@@ -45,6 +45,7 @@ export default function ContractsPage() {
         .order("started_at", { ascending: false });
 
       if (error) {
+        console.error("[contracts] Supabase error:", error.code, error.message);
         setContracts([]);
       } else {
         const list = (data as unknown as Contract[]) ?? [];

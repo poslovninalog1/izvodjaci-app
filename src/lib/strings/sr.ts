@@ -58,4 +58,26 @@ export const sr = {
   proposalRejected: "Ponuda je odbijena.",
   proposalWithdrawn: "Ponuda je povučena.",
   decisionDeadline: "Rok za odluku",
+
+  // Contract evidence pack
+  acceptContract: "Prihvati ugovor",
+  acceptContractTitle: "Prihvatanje ugovora",
+  tosCheckboxLabel: "Pročitao/la sam i prihvatam uslove korišćenja platforme.",
+  tosText:
+    "Korišćenjem platforme Izvođači pristajete na uslove korišćenja. " +
+    "Elektronsko prihvatanje ugovora klikom na dugme ima istu pravnu snagu " +
+    "kao i svojeručni potpis u skladu sa zakonom o elektronskom potpisu.",
+  confirmAccept: "Potvrdi i prihvati",
+  accepting: "Prihvatam...",
+  contractAccepted: "Ugovor je uspješno prihvaćen!",
+  contractAlreadyAccepted: "Ugovor je već prihvaćen.",
+  downloadPdf: "Preuzmi ugovor (PDF)",
+  downloading: "Preuzimam...",
+  auditLogTitle: "Istorija događaja",
+  noAuditEvents: "Nema zabilježenih događaja.",
+
+  // Proposals / contracts
+  openContract: "Otvori ugovor",
+  contractNotCreatedYet: "Ugovor još nije kreiran.",
+  createContract: "Kreiraj ugovor",
 } as const;

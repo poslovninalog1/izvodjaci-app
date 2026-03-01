@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "../../context/AuthContext";
@@ -34,6 +34,7 @@ export default function FreelancerProposalsPage() {
   const [proposals, setProposals] = useState<ProposalRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [withdrawingId, setWithdrawingId] = useState<number | null>(null);
+  const [openingContractId, setOpeningContractId] = useState<number | null>(null);
 
   const canAccessFreelancerProposals = profile?.role === "freelancer" || profile?.active_role === "freelancer";
   useEffect(() => {
@@ -47,39 +48,72 @@ export default function FreelancerProposalsPage() {
     }
   }, [user, profile, authLoading, router, canAccessFreelancerProposals]);
 
-  useEffect(() => {
+  const loadProposals = useCallback(async () => {
     if (!user) return;
+    setLoading(true);
     const uid = user.id;
-    let cancelled = false;
+    try {
+      const { data, error } = await supabase
+        .from("v_proposals")
+        .select("*")
+        .eq("freelancer_id", uid)
+        .order("created_at", { ascending: false });
 
-    async function load() {
-      try {
-        const { data, error } = await supabase
-          .from("v_proposals")
-          .select("*")
-          .eq("freelancer_id", uid)
-          .order("created_at", { ascending: false });
-
-        if (cancelled) return;
-        if (error) {
-          if (process.env.NODE_ENV === "development") console.debug("[proposals list]", { source: "freelancer", error: error.message });
-          setProposals([]);
-        } else {
-          if (process.env.NODE_ENV === "development") console.debug("[proposals list]", { source: "freelancer", count: data?.length ?? 0 });
-          setProposals((data as unknown as ProposalRow[]) ?? []);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          console.error("[freelancer/proposals] fetch error:", err);
-          setProposals([]);
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
+      if (error) {
+        console.error("[freelancer/proposals] Supabase error:", error.code, error.message);
+        setProposals([]);
+        return;
       }
+
+      const list = (data as unknown as ProposalRow[]) ?? [];
+      setProposals(list);
+    } catch (err) {
+      console.error("[freelancer/proposals] fetch error:", err);
+      setProposals([]);
+    } finally {
+      setLoading(false);
     }
-    load();
-    return () => { cancelled = true; };
   }, [user?.id]);
+
+  useEffect(() => {
+    loadProposals();
+  }, [loadProposals]);
+
+  const handleOpenContract = async (p: ProposalRow) => {
+    if (!user || openingContractId) return;
+    setOpeningContractId(p.id);
+
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) {
+      toast.error("Sesija je istekla.");
+      setOpeningContractId(null);
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/contracts/ensure?proposalId=${p.id}`, {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      const json = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        toast.error(json.error || "Greška pri otvaranju ugovora.");
+        return;
+      }
+
+      const contractId = json.contract_id;
+      if (contractId != null) {
+        router.push(`/contracts/${contractId}`);
+      } else {
+        toast.error("Ugovor nije pronađen.");
+      }
+    } catch (err) {
+      console.error("[freelancer/proposals] ensure error:", err);
+      toast.error("Greška pri otvaranju ugovora.");
+    } finally {
+      setOpeningContractId(null);
+    }
+  };
 
   const handleWithdraw = async (proposalId: number) => {
     setWithdrawingId(proposalId);
@@ -170,16 +204,28 @@ export default function FreelancerProposalsPage() {
                       {p.created_at ? new Date(p.created_at).toLocaleDateString("sr-Latn") : "—"}
                     </td>
                     <td style={{ padding: 14 }}>
-                      {p.status === "pending" && (
-                        <Button
-                          variant="secondary"
-                          style={{ padding: "6px 12px", fontSize: 12 }}
-                          onClick={() => handleWithdraw(p.id)}
-                          disabled={withdrawingId === p.id}
-                        >
-                          {withdrawingId === p.id ? "..." : sr.withdraw}
-                        </Button>
-                      )}
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                        {p.status === "pending" && (
+                          <Button
+                            variant="secondary"
+                            style={{ padding: "6px 12px", fontSize: 12 }}
+                            onClick={() => handleWithdraw(p.id)}
+                            disabled={withdrawingId === p.id}
+                          >
+                            {withdrawingId === p.id ? "..." : sr.withdraw}
+                          </Button>
+                        )}
+                        {normalizeProposalStatus(p.status) === "accepted" && (
+                          <Button
+                            variant="primary"
+                            style={{ padding: "6px 12px", fontSize: 12 }}
+                            onClick={() => handleOpenContract(p)}
+                            disabled={openingContractId === p.id}
+                          >
+                            {openingContractId === p.id ? "..." : sr.openContract}
+                          </Button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}

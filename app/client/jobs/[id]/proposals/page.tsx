@@ -60,10 +60,12 @@ export default function ClientProposalsPage() {
   const [proposals, setProposals] = useState<ProposalRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
 
   const [rejectingId, setRejectingId] = useState<number | null>(null);
   const [rejectionReason, setRejectionReason] = useState("");
   const [actionLoading, setActionLoading] = useState(false);
+  const [openingContractId, setOpeningContractId] = useState<number | null>(null);
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -153,88 +155,69 @@ export default function ClientProposalsPage() {
     }
     load();
     return () => { cancelled = true; };
-  }, [user?.id, jobId]);
+  }, [user?.id, jobId, refreshTrigger]);
 
   const handleAccept = async (p: ProposalRow) => {
     if (!user || actionLoading) return;
     setActionLoading(true);
 
     try {
-      const { data: existingContract } = await supabase
-        .from("contracts")
-        .select("id")
-        .eq("job_id", p.job_id)
-        .eq("status", "active")
-        .maybeSingle();
-
-      if (existingContract) {
-        toast.error("Već postoji aktivan ugovor za ovaj posao.");
-        return;
-      }
-
-      const { data: newContract, error: contractErr } = await supabase
-        .from("contracts")
-        .insert({
-          job_id: p.job_id,
-          client_id: user.id,
-          freelancer_id: p.freelancer_id,
-          status: "active",
-        })
-        .select("id")
-        .single();
-
-      if (contractErr || !newContract) {
-        toast.error("Greška pri kreiranju ugovora.");
-        return;
-      }
-
-      const contractId = (newContract as { id: number }).id;
-
-      const { data: existingConv } = await supabase
-        .from("conversations")
-        .select("id")
-        .eq("contract_id", contractId)
-        .maybeSingle();
-
-      if (!existingConv) {
-        await supabase.from("conversations").insert({ contract_id: contractId });
-      }
-
-      await supabase
+      const { error } = await supabase
         .from("proposals")
         .update({ status: "accepted" })
         .eq("id", p.id);
 
-      // Auto-reject other pending proposals
-      await supabase
-        .from("proposals")
-        .update({ status: "rejected", rejection_reason: sr.otherFreelancerChosen })
-        .eq("job_id", p.job_id)
-        .eq("status", "pending")
-        .neq("id", p.id);
-
-      // Close the job
-      await supabase
-        .from("jobs")
-        .update({ status: "closed" })
-        .eq("id", p.job_id);
-
-      setProposals((prev) =>
-        prev.map((x) => {
-          if (x.id === p.id) return { ...x, status: "accepted" };
-          if (x.status === "pending") return { ...x, status: "rejected", rejection_reason: sr.otherFreelancerChosen };
-          return x;
-        })
-      );
-      setJob((prev) => prev ? { ...prev, status: "closed" } : prev);
+      if (error) {
+        toast.error("Greška: " + error.message);
+        setActionLoading(false);
+        return;
+      }
 
       toast.success(sr.proposalAccepted);
-      router.push("/contracts/" + contractId);
+      setRefreshTrigger((t) => t + 1);
+
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.access_token) {
+        const res = await fetch(`/api/contracts/ensure?proposalId=${p.id}`, {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        });
+        const json = await res.json().catch(() => ({}));
+        if (res.ok && json.contract_id != null) {
+          router.push(`/contracts/${json.contract_id}`);
+        }
+      }
     } catch (err) {
       console.error("[client/proposals] accept error:", err);
       toast.error("Greška pri prihvatanju ponude.");
     } finally {
       setActionLoading(false);
+    }
+  };
+
+  const handleOpenContract = async (p: ProposalRow) => {
+    if (!user || openingContractId) return;
+    setOpeningContractId(p.id);
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) {
+      toast.error("Sesija je istekla.");
+      setOpeningContractId(null);
+      return;
+    }
+    try {
+      const res = await fetch(`/api/contracts/ensure?proposalId=${p.id}`, {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      const json = await res.json().catch(() => ({}));
+      setOpeningContractId(null);
+      if (res.ok && json.contract_id != null) {
+        router.push(`/contracts/${json.contract_id}`);
+      } else {
+        toast.error(json.error || "Greška pri otvaranju ugovora.");
+      }
+    } catch (err) {
+      console.error("[client/proposals] ensure error:", err);
+      toast.error("Greška pri otvaranju ugovora.");
+      setOpeningContractId(null);
     }
   };
 
@@ -388,6 +371,19 @@ export default function ClientProposalsPage() {
                 <p style={{ margin: "0 0 12px", fontSize: 13, color: "var(--danger)" }}>
                   <strong>{sr.rejectionReason}:</strong> {p.rejection_reason}
                 </p>
+              )}
+
+              {normalizeProposalStatus(p.status) === "accepted" && (
+                <div style={{ marginTop: 12 }}>
+                  <Button
+                    variant="primary"
+                    style={{ padding: "6px 12px", fontSize: 12 }}
+                    onClick={() => handleOpenContract(p)}
+                    disabled={openingContractId === p.id}
+                  >
+                    {openingContractId === p.id ? "..." : sr.openContract}
+                  </Button>
+                </div>
               )}
 
               {normalizeProposalStatus(p.status) === "pending" && (
