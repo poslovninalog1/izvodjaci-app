@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useAuth } from "../context/AuthContext";
 import { supabase } from "@/src/lib/supabaseClient";
 import Card from "../components/ui/Card";
 import Badge from "../components/ui/Badge";
@@ -38,6 +40,8 @@ const DEFAULT_BUDGET_MAX = "";
 const DEFAULT_SORT: "newest" | "budget" = "newest";
 
 export default function JobsPage() {
+  const router = useRouter();
+  const { user } = useAuth();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [categories, setCategories] = useState<{ id: number; name: string }[]>([]);
   const [cities, setCities] = useState<{ id: number; name: string }[]>([]);
@@ -311,9 +315,16 @@ export default function JobsPage() {
                         <Link href={`/jobs/${job.id}`}>
                           <Button variant="secondary">{sr.view}</Button>
                         </Link>
-                        <Link href={`/jobs/${job.id}`}>
-                          <Button variant="primary">{sr.sendProposal}</Button>
-                        </Link>
+                        <Button
+                          variant="primary"
+                          onClick={() => {
+                            const path = `/jobs/${job.id}?action=proposal`;
+                            if (!user) router.push(`/login?next=${encodeURIComponent(path)}`);
+                            else router.push(path);
+                          }}
+                        >
+                          {sr.sendProposal}
+                        </Button>
                       </div>
                     </div>
                   </Card>

@@ -57,6 +57,10 @@ type DebugInfo = {
   convErrMessage: string | null;
   participantRowYesNo: boolean;
   messagesCount: number;
+  /** Set after mark-as-read: updated row or null if no row matched */
+  markReadUpdatedRow: { conversation_id: string; user_id: string; last_read_at: string } | null;
+  /** Set after mark-as-read: error if update failed */
+  markReadError: { message: string; code?: string } | null;
 };
 
 function signedUrlCacheKey(bucket: string, path: string): string {
@@ -88,6 +92,8 @@ export default function InboxChatPage() {
   const chatRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [inboxRefreshTrigger, setInboxRefreshTrigger] = useState(0);
+  const [clearedReadId, setClearedReadId] = useState<string | null>(null);
+  const [senderNames, setSenderNames] = useState<Record<string, string>>({});
 
   const markAsRead = useCallback(async () => {
     if (!user) return;
@@ -148,6 +154,9 @@ export default function InboxChatPage() {
               console.log("[inbox conversation]", obj)
           : () => {};
 
+      if (process.env.NODE_ENV === "development") {
+        console.debug("[inbox conversation] fetch start", { authUserId: uid, conversationId });
+      }
       devLog({ routeParam: "conversationId", value: conversationId });
 
       const {
@@ -189,6 +198,7 @@ export default function InboxChatPage() {
       const convData = convRes.data;
       const convErr = convRes.error;
       devLog({
+        conversationId,
         conversationFetch: {
           data: convData,
           error: convErr
@@ -196,6 +206,7 @@ export default function InboxChatPage() {
                 code: convErr.code,
                 message: convErr.message,
                 details: (convErr as { details?: string })?.details,
+                hint: (convErr as { hint?: string })?.hint,
               }
             : null,
         },
@@ -210,6 +221,7 @@ export default function InboxChatPage() {
       const msgRows = (msgRes.data as Message[] | null) ?? [];
       const msgErr = msgRes.error;
       devLog({
+        conversationId,
         messagesFetch: {
           count: msgRows.length,
           error: msgErr
@@ -217,6 +229,7 @@ export default function InboxChatPage() {
                 code: msgErr.code,
                 message: msgErr.message,
                 details: (msgErr as { details?: string })?.details,
+                hint: (msgErr as { hint?: string })?.hint,
               }
             : null,
         },
@@ -240,6 +253,8 @@ export default function InboxChatPage() {
         convErrMessage,
         participantRowYesNo: hasParticipantRow,
         messagesCount: msgRows.length,
+        markReadUpdatedRow: null,
+        markReadError: null,
       });
 
       if (!authUid) {
@@ -274,18 +289,46 @@ export default function InboxChatPage() {
       }
 
       setAccessDenied(false);
-      // Mark as read as soon as we know we have access (read receipt)
-      const { data: readRow, error: readErr } = await supabase
+      const nowIso = new Date().toISOString();
+      const { data: updatedRow, error: readErr } = await supabase
         .from("conversation_participants")
-        .update({ last_read_at: new Date().toISOString() })
+        .update({ last_read_at: nowIso })
         .eq("conversation_id", conversationId)
         .eq("user_id", uid)
         .select("conversation_id, user_id, last_read_at")
         .maybeSingle();
+      const markReadUpdatedRow =
+        updatedRow != null
+          ? {
+              conversation_id: String(updatedRow.conversation_id),
+              user_id: String(updatedRow.user_id),
+              last_read_at: String(updatedRow.last_read_at),
+            }
+          : null;
+      const markReadError =
+        readErr != null ? { message: readErr.message, code: readErr.code } : null;
       if (process.env.NODE_ENV === "development") {
-        console.debug("[mark-read]", { conversationId, uid, readRow, readErr: readErr ? { message: readErr.message, code: readErr.code } : null });
+        console.debug("[mark read]", { conversationId, uid, nowIso, updatedRow: markReadUpdatedRow, error: markReadError });
+        if (markReadUpdatedRow) {
+          console.debug("[mark read] last_read_at updated", markReadUpdatedRow.last_read_at);
+        }
+        if (readErr?.code === "42501") {
+          console.warn("[mark read] RLS UPDATE policy missing for conversation_participants. Apply migration 00018.");
+        }
       }
-      if (!readErr && readRow) setInboxRefreshTrigger((t) => t + 1);
+      setDebugInfo((prev) =>
+        prev
+          ? {
+              ...prev,
+              markReadUpdatedRow,
+              markReadError,
+            }
+          : null
+      );
+      if (!readErr && updatedRow) {
+        setInboxRefreshTrigger((t) => t + 1);
+        setClearedReadId(conversationId);
+      }
 
       const c = convData as Record<string, unknown>;
       let otherUserName = "—";
@@ -336,6 +379,21 @@ export default function InboxChatPage() {
       const loaded = [...msgRows].reverse();
       setMessages(loaded);
       setHasMore(msgRows.length >= PAGE_SIZE);
+
+      const senderIds = [...new Set(loaded.map((m) => m.sender_id).filter(Boolean))] as string[];
+      if (senderIds.length > 0) {
+        const { data: profilesData } = await supabase
+          .from("profiles")
+          .select("id, full_name")
+          .in("id", senderIds);
+        const map: Record<string, string> = {};
+        (profilesData ?? []).forEach((p: { id: string; full_name: string | null }) => {
+          const name = p.full_name?.trim();
+          map[p.id] = name ? name : `${p.id.slice(0, 8)}…`;
+        });
+        setSenderNames(map);
+      }
+
       setLoading(false);
     }
     load();
@@ -360,12 +418,16 @@ export default function InboxChatPage() {
           table: "messages",
           filter: `conversation_id=eq.${conversationId}`,
         },
-        (payload) => {
+        async (payload) => {
           const newMsg = payload.new as Message;
           setMessages((prev) => {
             if (prev.some((m) => m.id === newMsg.id)) return prev;
             return [...prev, newMsg];
           });
+          if (newMsg.sender_id) {
+            const { data: p } = await supabase.from("profiles").select("id, full_name").eq("id", newMsg.sender_id).single();
+            if (p) setSenderNames((prev) => ({ ...prev, [newMsg.sender_id]: (p as { full_name: string | null }).full_name?.trim() || `${newMsg.sender_id.slice(0, 8)}…` }));
+          }
           markAsRead();
         }
       )
@@ -627,7 +689,7 @@ export default function InboxChatPage() {
   }
 
   if (!meta) {
-    let message = "Razgovor nije pronađen.";
+    let message = "Not found or no access.";
     let linkHref = "/inbox";
     let linkText = "← Nazad na Inbox";
     if (debugInfo) {
@@ -637,19 +699,20 @@ export default function InboxChatPage() {
         debugInfo.participantRowYesNo &&
         !debugInfo.convDataYesNo
       ) {
-        message =
-          "Greška sheme/upita: učesnik postoji, razgovor nije učitan.";
+        message = "Not found or no access.";
+        linkHref = "/inbox?new=1";
+        linkText = "← Započni novi razgovor";
       } else if (!debugInfo.participantRowYesNo) {
-        message = "Nisi učesnik ovog razgovora.";
+        message = "Not found or no access.";
         linkHref = "/inbox?new=1";
         linkText = "← Započni novi razgovor";
       } else if (accessDenied) {
-        message = "Nemaš pristup ovom razgovoru.";
+        message = "Not found or no access.";
         linkHref = "/inbox?new=1";
         linkText = "← Započni novi razgovor";
       }
     } else if (accessDenied) {
-      message = "Nemaš pristup ovom razgovoru.";
+      message = "Not found or no access.";
       linkHref = "/inbox?new=1";
       linkText = "← Započni novi razgovor";
     }
@@ -684,6 +747,8 @@ export default function InboxChatPage() {
             </div>
             <div>participantRow: {debugInfo.participantRowYesNo ? "yes" : "no"}</div>
             <div>messages count: {debugInfo.messagesCount}</div>
+            <div>markReadUpdatedRow: {debugInfo.markReadUpdatedRow ? JSON.stringify(debugInfo.markReadUpdatedRow) : "—"}</div>
+            <div>markReadError: {debugInfo.markReadError ? JSON.stringify(debugInfo.markReadError) : "—"}</div>
           </div>
         )}
       </div>
@@ -712,7 +777,12 @@ export default function InboxChatPage() {
           <h1 style={{ margin: "0 0 16px", fontSize: 22, fontWeight: 600 }}>
             Inbox
           </h1>
-          <InboxSidebar key={user?.id ?? "anon"} selectedId={conversationId} refreshTrigger={inboxRefreshTrigger} />
+          <InboxSidebar
+            key={user?.id ?? "anon"}
+            selectedId={conversationId}
+            refreshTrigger={inboxRefreshTrigger}
+            clearedReadId={clearedReadId}
+          />
         </div>
 
         <Card
@@ -808,24 +878,35 @@ export default function InboxChatPage() {
             {messages.map((m) => {
               const mine = m.sender_id === user.id;
               const isPending = String(m.id).startsWith("pending-");
+              const senderDisplay = senderNames[m.sender_id] ?? (m.sender_id ? `${m.sender_id.slice(0, 8)}…` : "—");
               return (
                 <div
                   key={m.id}
                   style={{
                     alignSelf: mine ? "flex-end" : "flex-start",
                     maxWidth: "75%",
-                    padding: "10px 14px",
-                    borderRadius: mine
-                      ? "var(--radius-sm) var(--radius-sm) 4px var(--radius-sm)"
-                      : "var(--radius-sm) var(--radius-sm) var(--radius-sm) 4px",
-                    background: mine
-                      ? "rgba(220,38,38,0.08)"
-                      : "var(--panel2)",
-                    border: mine
-                      ? "1px solid rgba(220,38,38,0.2)"
-                      : "1px solid var(--border)",
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: mine ? "flex-end" : "flex-start",
                   }}
                 >
+                  <span style={{ fontSize: 11, color: "var(--muted)", marginBottom: 2 }}>
+                    {senderDisplay}
+                  </span>
+                  <div
+                    style={{
+                      padding: "10px 14px",
+                      borderRadius: mine
+                        ? "var(--radius-sm) var(--radius-sm) 4px var(--radius-sm)"
+                        : "var(--radius-sm) var(--radius-sm) var(--radius-sm) 4px",
+                      background: mine
+                        ? "rgba(220,38,38,0.08)"
+                        : "var(--panel2)",
+                      border: mine
+                        ? "1px solid rgba(220,38,38,0.2)"
+                        : "1px solid var(--border)",
+                    }}
+                  >
                   {m.attachment_path ? (
                     <>
                       {renderAttachment(m)}
@@ -864,6 +945,7 @@ export default function InboxChatPage() {
                   >
                     {relativeTime(m.created_at)}
                   </p>
+                </div>
                 </div>
               );
             })}
@@ -1034,6 +1116,14 @@ export default function InboxChatPage() {
           </div>
           <div>participantRow: {debugInfo.participantRowYesNo ? "yes" : "no"}</div>
           <div>messages count: {debugInfo.messagesCount}</div>
+          <div>markReadUpdatedRow: {debugInfo.markReadUpdatedRow ? JSON.stringify(debugInfo.markReadUpdatedRow) : "—"}</div>
+          <div>markReadError: {debugInfo.markReadError ? JSON.stringify(debugInfo.markReadError) : "—"}</div>
+          {debugInfo.markReadError?.code === "42501" && (
+            <div style={{ color: "var(--danger)", marginTop: 6 }}>RLS UPDATE policy missing for conversation_participants. Apply migration 00018.</div>
+          )}
+          {(debugInfo.markReadUpdatedRow == null || debugInfo.markReadError != null) && debugInfo.markReadError?.code !== "42501" && (
+            <div style={{ color: "var(--danger)", marginTop: 6 }}>Mark-read failed or no row updated — badge may reappear.</div>
+          )}
         </div>
       )}
     </>

@@ -10,6 +10,7 @@ import Card from "../../components/ui/Card";
 import Badge from "../../components/ui/Badge";
 import Button from "../../components/ui/Button";
 import { sr } from "@/src/lib/strings/sr";
+import { getProposalStatusLabel, getProposalPriceDisplay, normalizeProposalStatus } from "@/src/lib/proposals/compat";
 
 type ProposalRow = {
   id: number;
@@ -34,16 +35,17 @@ export default function FreelancerProposalsPage() {
   const [loading, setLoading] = useState(true);
   const [withdrawingId, setWithdrawingId] = useState<number | null>(null);
 
+  const canAccessFreelancerProposals = profile?.role === "freelancer" || profile?.active_role === "freelancer";
   useEffect(() => {
     if (!authLoading && !user) {
       router.replace("/login?next=/freelancer/proposals");
       return;
     }
-    if (!authLoading && profile?.role !== "freelancer") {
+    if (!authLoading && !canAccessFreelancerProposals) {
       router.replace("/");
       return;
     }
-  }, [user, profile, authLoading, router]);
+  }, [user, profile, authLoading, router, canAccessFreelancerProposals]);
 
   useEffect(() => {
     if (!user) return;
@@ -60,10 +62,10 @@ export default function FreelancerProposalsPage() {
 
         if (cancelled) return;
         if (error) {
-          if (process.env.NODE_ENV === "development") console.debug("[freelancer/proposals] v_proposals fetch error:", error.message);
+          if (process.env.NODE_ENV === "development") console.debug("[proposals list]", { source: "freelancer", error: error.message });
           setProposals([]);
         } else {
-          if (process.env.NODE_ENV === "development") console.debug("[freelancer/proposals] v_proposals fetch", { count: data?.length ?? 0 });
+          if (process.env.NODE_ENV === "development") console.debug("[proposals list]", { source: "freelancer", count: data?.length ?? 0 });
           setProposals((data as unknown as ProposalRow[]) ?? []);
         }
       } catch (err) {
@@ -102,24 +104,21 @@ export default function FreelancerProposalsPage() {
     }
   };
 
-  const getPrice = (p: Proposal) => {
-    if (p.proposed_fixed != null) return `${p.proposed_fixed} €`;
-    if (p.proposed_rate != null) return `${p.proposed_rate} €/h`;
-    return "—";
-  };
+  const getPrice = (p: ProposalRow) => getProposalPriceDisplay(p);
 
   const getStatusBadge = (s: string | null) => {
-    if (s === "pending") return <Badge variant="accent">{sr.statusPending}</Badge>;
-    if (s === "accepted") return <Badge variant="active">{sr.statusAccepted}</Badge>;
-    if (s === "rejected") return <Badge variant="cancelled">{sr.statusRejected}</Badge>;
-    if (s === "withdrawn") return <Badge variant="muted">{sr.statusWithdrawn}</Badge>;
-    if (s === "expired") return <Badge variant="cancelled">{sr.statusExpired}</Badge>;
-    return <Badge variant="muted">{s ?? "—"}</Badge>;
+    const key = normalizeProposalStatus(s);
+    const label = getProposalStatusLabel(s);
+    if (key === "accepted") return <Badge variant="active">{label}</Badge>;
+    if (key === "rejected" || key === "expired") return <Badge variant="cancelled">{label}</Badge>;
+    if (key === "withdrawn") return <Badge variant="muted">{label}</Badge>;
+    if (key === "shortlisted") return <Badge variant="accent">{label}</Badge>;
+    return <Badge variant="accent">{label}</Badge>;
   };
 
   const getJobTitle = (p: ProposalRow) => (p.job_title && String(p.job_title).trim()) || "—";
 
-  if (authLoading || !user || profile?.role !== "freelancer") {
+  if (authLoading || !user || !canAccessFreelancerProposals) {
     return (
       <div style={{ maxWidth: 900, margin: "0 auto" }}>
         <p style={{ color: "var(--muted)" }}>{sr.loading}</p>

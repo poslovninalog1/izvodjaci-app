@@ -7,6 +7,7 @@ import { useAuth } from "../context/AuthContext";
 import { getDisplayName } from "@/src/lib/profile";
 import { isClientForApp, ONBOARDING_STORAGE_KEY, ONBOARDING_ROLE_KEY } from "@/src/lib/onboarding";
 import Logo from "./Logo";
+import RoleSwitcher from "./RoleSwitcher";
 
 type NavItem = { href: string; label: string; auth?: boolean; role?: "client" | "freelancer" | "admin" };
 
@@ -58,9 +59,12 @@ export default function TopHeader() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  const activeRole = profile?.active_role ?? profile?.role ?? null;
   const visibleItems = NAV_ITEMS.filter((it) => {
     if (it.auth && !user) return false;
-    if (it.role && profile?.role !== it.role) return false;
+    if (it.role === "admin" && profile?.role !== "admin") return false;
+    if (it.role === "client" && activeRole !== "client") return false;
+    if (it.role === "freelancer" && activeRole !== "freelancer") return false;
     return true;
   });
 
@@ -125,8 +129,9 @@ export default function TopHeader() {
           })}
         </nav>
 
-        {/* Right: CTA or profile dropdown */}
+        {/* Right: role switcher, CTA, profile dropdown */}
         <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0, marginLeft: "auto" }}>
+          {user && <RoleSwitcher />}
           {!profile?.deactivated && (
             <Link
               href={objaviPosaoHref}

@@ -17,23 +17,26 @@ type Job = {
   created_at: string;
 };
 
+type JobWithCount = Job & { proposal_count?: number };
+
 export default function ClientJobsPage() {
   const router = useRouter();
   const { user, profile, loading: authLoading } = useAuth();
 
-  const [jobs, setJobs] = useState<Job[]>([]);
+  const [jobs, setJobs] = useState<JobWithCount[]>([]);
   const [loading, setLoading] = useState(true);
 
+  const canAccessClientJobs = profile?.role === "client" || profile?.active_role === "client";
   useEffect(() => {
     if (!authLoading && !user) {
       router.replace("/login?next=/client/jobs");
       return;
     }
-    if (!authLoading && profile?.role !== "client") {
+    if (!authLoading && !canAccessClientJobs) {
       router.replace("/");
       return;
     }
-  }, [user, profile, authLoading, router]);
+  }, [user, profile, authLoading, router, canAccessClientJobs]);
 
   useEffect(() => {
     if (!user) return;
@@ -53,7 +56,25 @@ export default function ClientJobsPage() {
           console.error("[client/jobs] Supabase error:", error.message, error.code, error.hint);
           setJobs([]);
         } else {
-          setJobs((data as Job[]) ?? []);
+          const list = (data as Job[]) ?? [];
+          const jobIds = list.map((j) => j.id);
+          let proposalCounts: Record<number, number> = {};
+          if (jobIds.length > 0) {
+            const { data: countData } = await supabase
+              .from("proposals")
+              .select("job_id")
+              .in("job_id", jobIds);
+            const byJob: Record<number, number> = {};
+            (countData ?? []).forEach((r: { job_id: number }) => {
+              byJob[r.job_id] = (byJob[r.job_id] ?? 0) + 1;
+            });
+            proposalCounts = byJob;
+          }
+          const withCounts: JobWithCount[] = list.map((j) => ({ ...j, proposal_count: proposalCounts[j.id] ?? 0 }));
+          setJobs(withCounts);
+          if (process.env.NODE_ENV === "development") {
+            console.debug("[client/jobs] auth uid:", uid, "returned count:", list.length);
+          }
         }
       } catch (err) {
         console.error("[client/jobs] fetch exception:", err);
@@ -65,15 +86,33 @@ export default function ClientJobsPage() {
     load();
   }, [user?.id]);
 
-  const getStatusBadge = (s: string | null) => {
-    if (s === "published") return <Badge variant="active">{sr.statusPublished}</Badge>;
-    if (s === "closed") return <Badge variant="muted">{sr.statusClosed}</Badge>;
-    if (s === "expired") return <Badge variant="cancelled">{sr.statusExpired}</Badge>;
-    if (s === "draft") return <Badge variant="muted">{sr.statusDraft}</Badge>;
-    return <Badge variant="muted">{s ?? "—"}</Badge>;
+  const getJobStatusLabel = (s: string | null): string => {
+    if (!s) return "—";
+    switch (s) {
+      case "published":
+      case "open":
+        return "Objavljen";
+      case "closed":
+        return "Zatvoren";
+      case "draft":
+        return "Nacrt";
+      case "expired":
+        return "Istekao";
+      default:
+        return s;
+    }
   };
 
-  if (authLoading || !user || profile?.role !== "client") {
+  const getStatusBadge = (s: string | null) => {
+    const label = getJobStatusLabel(s);
+    if (s === "published" || s === "open") return <Badge variant="active">{label}</Badge>;
+    if (s === "closed") return <Badge variant="muted">{label}</Badge>;
+    if (s === "expired") return <Badge variant="cancelled">{label}</Badge>;
+    if (s === "draft") return <Badge variant="muted">{label}</Badge>;
+    return <Badge variant="muted">{label}</Badge>;
+  };
+
+  if (authLoading || !user || !canAccessClientJobs) {
     return (
       <div style={{ maxWidth: 900, margin: "0 auto" }}>
         <p style={{ color: "var(--muted)" }}>{sr.loading}</p>
@@ -122,12 +161,26 @@ export default function ClientJobsPage() {
                         {job.created_at ? new Date(job.created_at).toLocaleDateString("sr-Latn") : "—"}
                       </td>
                       <td style={{ padding: 14 }}>
-                        <span style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        <span style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                           <Link href={`/jobs/${job.id}`}>
                             <Button variant="secondary" style={{ padding: "6px 12px", fontSize: 12 }}>Pogledaj</Button>
                           </Link>
-                          <Link href={`/client/jobs/${job.id}/proposals`}>
-                            <Button variant="secondary" style={{ padding: "6px 12px", fontSize: 12 }}>Ponude</Button>
+                          <Link
+                            href={`/client/jobs/${String(job.id)}/proposals`}
+                            style={{
+                              display: "inline-block",
+                              padding: "6px 12px",
+                              fontSize: 12,
+                              fontWeight: 500,
+                              background: "#ffffff",
+                              color: "var(--text)",
+                              border: "1px solid var(--border)",
+                              borderRadius: "var(--radius-sm)",
+                              cursor: "pointer",
+                              textDecoration: "none",
+                            }}
+                          >
+                            Ponude {job.proposal_count != null && job.proposal_count > 0 ? `(${job.proposal_count})` : ""}
                           </Link>
                         </span>
                       </td>

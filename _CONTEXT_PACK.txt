@@ -1,0 +1,230 @@
+﻿# CONTEXT PACK (COMPACT)
+Generated: 02/28/2026 23:22:29
+Root: C:\Users\Vasilije\izvodjaci-app\izvodjaci
+
+## USER PROMPT
+ponude
+
+## PATTERN
+ponude|proposals
+
+## INCLUDED FILES (top 20 by hit count)
+56  C:\Users\Vasilije\izvodjaci-app\izvodjaci\docs\SUPABASE-CHANGE-AUDIT.md
+26  C:\Users\Vasilije\izvodjaci-app\izvodjaci\docs\PHASE5-PROPOSALS.md
+22  C:\Users\Vasilije\izvodjaci-app\izvodjaci\supabase\migrations\00013_decision_flow.sql
+21  C:\Users\Vasilije\izvodjaci-app\izvodjaci\supabase\migrations\00019_proposals_grants_rls_trigger_view.sql
+17  C:\Users\Vasilije\izvodjaci-app\izvodjaci\app\freelancer\proposals\page.tsx
+13  C:\Users\Vasilije\izvodjaci-app\izvodjaci\supabase\migrations\00009_phase5_rls.sql
+10  C:\Users\Vasilije\izvodjaci-app\izvodjaci\supabase\migrations\00006_rls.sql
+9  C:\Users\Vasilije\izvodjaci-app\izvodjaci\docs\ARCHITECTURE.md
+6  C:\Users\Vasilije\izvodjaci-app\izvodjaci\README.md
+6  C:\Users\Vasilije\izvodjaci-app\izvodjaci\docs\MVP-CHECKLIST.md
+5  C:\Users\Vasilije\izvodjaci-app\izvodjaci\supabase\migrations\00003_marketplace_tables.sql
+3  C:\Users\Vasilije\izvodjaci-app\izvodjaci\app\components\SidebarTabs.tsx
+2  C:\Users\Vasilije\izvodjaci-app\izvodjaci\src\lib\strings\sr.ts
+2  C:\Users\Vasilije\izvodjaci-app\izvodjaci\app\client\jobs\page.tsx
+2  C:\Users\Vasilije\izvodjaci-app\izvodjaci\docs\proposals-sanity.sql
+2  C:\Users\Vasilije\izvodjaci-app\izvodjaci\docs\PHASE6-CONTRACTS-INBOX.md
+2  C:\Users\Vasilije\izvodjaci-app\izvodjaci\docs\PHASE7-REVIEWS.md
+1  C:\Users\Vasilije\izvodjaci-app\izvodjaci\docs\PHASE2-MIGRATIONS.md
+1  C:\Users\Vasilije\izvodjaci-app\izvodjaci\app\admin\page.tsx
+1  C:\Users\Vasilije\izvodjaci-app\izvodjaci\app\components\TopHeader.tsx
+
+
+--- EXCERPTS ---
+
+===== FILE: C:\Users\Vasilije\izvodjaci-app\izvodjaci\docs\SUPABASE-CHANGE-AUDIT.md =====
+
+L15: | `decision_deadline` | jobs | 00013_decision_flow.sql | **No** (00013 not applied) | Yes | `app/client/jobs/page.tsx` (select), `app/client/jobs/[id]/proposals/page.tsx` (select) | **HIGH** — SELECT fails with 42703 |
+---
+L16: | `rejection_reason` | proposals | 00013_decision_flow.sql | **No** | Yes | `app/client/jobs/[id]/proposals/page.tsx` (select, update), `app/freelancer/proposals/page.tsx` (select) | **HIGH** — SELECT/UPDATE fail |
+---
+L26: | `pending` | proposals | 00013 only: `CHECK (status IN ('pending', 'accepted', 'rejected', 'withdrawn', 'expired'))` | **No** (current: submitted, shortlisted, rejected, hired) | Client proposals filter `.eq("status", "pending")`, freelancer withdraw → `withdrawn` | **HIGH** — INSERT/UPDATE 23514 |
+---
+L27: | `accepted` | proposals | 00013 | **No** | Client proposals: accept → `accepted` | **HIGH** |
+---
+L28: | `withdrawn` | proposals | 00013 | **No** | Freelancer proposals: withdraw | **HIGH** |
+---
+L29: | `expired` | proposals | 00013 | **No** | Expiry function (00013) | N/A until 00013 applied |
+---
+L30: | `closed` | jobs | 00002: `CHECK (status IN ('draft', 'published', 'closed'))` | **Yes** | Client proposals: close job | None |
+---
+L39: | proposals_status_check | proposals | 00003: submitted, shortlisted, rejected, hired. 00013: pending, accepted, rejected, withdrawn, expired | submitted, shortlisted, rejected, hired | pending, accepted, rejected, withdrawn, expired | **HIGH** — current code uses pending/accepted/withdrawn/rejected; 00013 also backfills submitted→pending, hired→accepted |
+---
+
+===== FILE: C:\Users\Vasilije\izvodjaci-app\izvodjaci\docs\PHASE5-PROPOSALS.md =====
+
+L1: # Phase 5: Proposals (Ponude) End-to-End
+---
+L8: | `app/freelancer/proposals/page.tsx` | Freelancer dashboard: list proposals with job title, status, price, date |
+---
+L9: | `app/client/jobs/[id]/proposals/page.tsx` | Client view: proposals for a job; freelancer name, cover letter preview, price, status; Shortlist/Reject/Hire |
+---
+L10: | `supabase/migrations/00009_phase5_rls.sql` | Proposals RLS: INSERT freelancer only; SELECT own or client's jobs; UPDATE client only |
+---
+L11: | `docs/PHASE5-PROPOSALS.md` | Phase 5 notes and test steps |
+---
+L18: | `app/client/jobs/page.tsx` | "Ponude" link per job |
+---
+L19: | `app/components/SidebarTabs.tsx` | "Moje ponude" for freelancers |
+---
+L24: ALTER TABLE proposals ENABLE ROW LEVEL SECURITY;
+---
+
+===== FILE: C:\Users\Vasilije\izvodjaci-app\izvodjaci\supabase\migrations\00013_decision_flow.sql =====
+
+L10: ALTER TABLE proposals ADD COLUMN IF NOT EXISTS rejection_reason text;
+---
+L15: UPDATE proposals SET status = 'pending'  WHERE status IN ('submitted', 'shortlisted');
+---
+L16: UPDATE proposals SET status = 'accepted' WHERE status = 'hired';
+---
+L18: -- Backfill rejection_reason for already-rejected proposals so the new
+---
+L20: UPDATE proposals SET rejection_reason = 'Ponuda je odbijena.'
+---
+L30: ALTER TABLE proposals DROP CONSTRAINT IF EXISTS proposals_status_check;
+---
+L31: ALTER TABLE proposals ADD CONSTRAINT proposals_status_check
+---
+L34: -- Rejected proposals MUST have a non-empty reason.
+---
+
+===== FILE: C:\Users\Vasilije\izvodjaci-app\izvodjaci\supabase\migrations\00019_proposals_grants_rls_trigger_view.sql =====
+
+L2: -- Proposals: GRANTs, RLS (INSERT with job exists), client_id trigger, v_proposals view
+---
+L6: GRANT SELECT, INSERT ON public.proposals TO authenticated;
+---
+L7: GRANT UPDATE ON public.proposals TO authenticated;
+---
+L10: ALTER TABLE public.proposals ADD COLUMN IF NOT EXISTS client_id uuid REFERENCES public.profiles(id);
+---
+L13: ALTER TABLE public.proposals ALTER COLUMN status SET DEFAULT 'pending';
+---
+L16: CREATE OR REPLACE FUNCTION public.set_proposals_client_id()
+---
+L30: DROP TRIGGER IF EXISTS trg_set_proposals_client_id ON public.proposals;
+---
+L31: CREATE TRIGGER trg_set_proposals_client_id
+---
+
+===== FILE: C:\Users\Vasilije\izvodjaci-app\izvodjaci\app\freelancer\proposals\page.tsx =====
+
+L28: export default function FreelancerProposalsPage() {
+---
+L33:   const [proposals, setProposals] = useState<ProposalRow[]>([]);
+---
+L39:       router.replace("/login?next=/freelancer/proposals");
+---
+L56:           .from("v_proposals")
+---
+L63:           if (process.env.NODE_ENV === "development") console.debug("[proposals list]", { source: "freelancer", error: error.message });
+---
+L64:           setProposals([]);
+---
+L66:           if (process.env.NODE_ENV === "development") console.debug("[proposals list]", { source: "freelancer", count: data?.length ?? 0 });
+---
+L67:           setProposals((data as unknown as ProposalRow[]) ?? []);
+---
+
+===== FILE: C:\Users\Vasilije\izvodjaci-app\izvodjaci\supabase\migrations\00009_phase5_rls.sql =====
+
+L2: -- Phase 5: Proposals RLS policies
+---
+L5: ALTER TABLE proposals ENABLE ROW LEVEL SECURITY;
+---
+L8: DROP POLICY IF EXISTS "proposals_insert_freelancer" ON proposals;
+---
+L9: CREATE POLICY "proposals_insert_freelancer" ON proposals
+---
+L14: --    - freelancer can select own proposals (freelancer_id = auth.uid())
+---
+L15: --    - client can select proposals for jobs they own
+---
+L16: DROP POLICY IF EXISTS "proposals_select_client" ON proposals;
+---
+L17: DROP POLICY IF EXISTS "proposals_select_freelancer" ON proposals;
+---
+
+===== FILE: C:\Users\Vasilije\izvodjaci-app\izvodjaci\supabase\migrations\00006_rls.sql =====
+
+L69: -- proposals
+---
+L71: ALTER TABLE proposals ENABLE ROW LEVEL SECURITY;
+---
+L73: DROP POLICY IF EXISTS "proposals_select_client" ON proposals;
+---
+L74: CREATE POLICY "proposals_select_client" ON proposals
+---
+L78:       WHERE jobs.id = proposals.job_id AND jobs.client_id = auth.uid()
+---
+L83: DROP POLICY IF EXISTS "proposals_insert_freelancer" ON proposals;
+---
+L84: CREATE POLICY "proposals_insert_freelancer" ON proposals
+---
+L90: DROP POLICY IF EXISTS "proposals_update_client" ON proposals;
+---
+
+===== FILE: C:\Users\Vasilije\izvodjaci-app\izvodjaci\docs\ARCHITECTURE.md =====
+
+L15: | **app/client/** | Client-area routes (my jobs, proposals). |
+---
+L17: | **app/freelancer/** | Freelancer proposals. |
+---
+L38: | `/jobs/[id]` | Job detail, submit proposal | `jobs`, `categories`, `proposals` |
+---
+L40: | `/client/jobs/[id]/proposals` | Client: view/accept proposals, create contract | `jobs`, `proposals`, `contracts`, `conversations` |
+---
+L41: | `/freelancer/proposals` | Freelancer: my proposals | `proposals` |
+---
+L62: | **client** | Job poster, hires freelancers | Own jobs (CRUD); proposals for own jobs; create contracts; conversations with hired freelancers; report content. |
+---
+L63: | **freelancer** | Contractor | Own proposals; public profile; contracts where freelancer; conversations; submit reviews; report content. |
+---
+L66: - **Unauthenticated**: Can see public job list (published), public freelancer/client profiles, landing. Cannot create jobs or proposals.
+---
+
+===== FILE: C:\Users\Vasilije\izvodjaci-app\izvodjaci\README.md =====
+
+L3: Next.js (App Router) + Supabase marketplace for clients and freelancers. Supports jobs, proposals, contracts, messaging, reviews, and admin moderation.
+---
+L174: ### View grants (if inbox unread or proposals list fails)
+---
+L176: If the app logs **permission denied for relation v_unread_counts** or **permission denied for relation v_proposals** (or "relation ... does not exist"), run the following in the Supabase SQL editor (Dashboard → SQL). Do **not** add these as repo migrations if your views were created outside migrations.
+---
+L179: -- Allow authenticated users to read the unread-count and proposals views
+---
+L182: GRANT SELECT ON public.v_proposals TO authenticated;
+---
+L185: **Root cause found (fill after reproducing):** Open browser Console + Network. On `/inbox/[conversationId]` look for `[mark-read]`: if `readRow` is null or `readErr` is set, that is the cause (e.g. RLS blocks update, or wrong conversationId). On sidebar load look for `[unread view]`: if `error` is set (e.g. "permission denied for relation v_unread_counts" or "relation v_unread_counts does not exist"), run the GRANTs above. On proposal submit look for `[proposals insert]`: if `readErr` is set (e.g. "new row violates row-level security policy" or "column ... does not exist"), fix RLS or payload columns.
+---
+
+===== FILE: C:\Users\Vasilije\izvodjaci-app\izvodjaci\docs\MVP-CHECKLIST.md =====
+
+L21:    - Klik na "Ponude" → `/client/jobs/[id]/proposals`
+---
+L45: 3. **Slanje ponude**
+---
+L51:    - `/freelancer/proposals` → status (Poslato, U užem izboru, Odbijeno, Angažovan)
+---
+L78:    - Deaktivirani korisnik vidi banner "Nalog je deaktiviran." i ne može objavljivati poslove, slati ponude niti poruke
+---
+L89: - **proposals**: SELECT client posla ili freelancer; INSERT freelancer; UPDATE client posla
+---
+L99:   - Tabs: Poslovi, Inbox, Ugovori, Moji poslovi (client), Moje ponude (freelancer), Admin (admin)
+---
+
+===== FILE: C:\Users\Vasilije\izvodjaci-app\izvodjaci\supabase\migrations\00003_marketplace_tables.sql =====
+
+L2: -- Phase 2: Proposals, Contracts, Messaging, Reviews, Reports
+---
+L6: -- Proposals
+---
+L8: CREATE TABLE IF NOT EXISTS proposals (
+---
+L20: CREATE INDEX IF NOT EXISTS idx_proposals_job ON proposals (job_id);
+---
+
+# TOTAL_MATCHES: 80 (limit 80)
+

@@ -47,11 +47,10 @@ export default function SidebarTabs() {
     items.splice(2, 0, { href: "/inbox", label: "Inbox" });
     items.splice(3, 0, { href: "/contracts", label: "Ugovori" });
   }
-  if (!loading && user && profile?.role === "client") {
-    items.splice(4, 0, { href: "/client/jobs", label: "Moji poslovi" });
-  }
-  if (!loading && user && profile?.role === "freelancer") {
-    items.splice(4, 0, { href: "/freelancer/proposals", label: "Moje ponude" });
+  const activeRole = profile?.active_role ?? profile?.role ?? null;
+  if (!loading && user) {
+    if (activeRole === "client") items.splice(4, 0, { href: "/client/jobs", label: "Moji poslovi" });
+    else if (activeRole === "freelancer") items.splice(4, 0, { href: "/freelancer/proposals", label: "Moje ponude" });
   }
   if (!loading && user && profile?.role === "admin") {
     items.splice(4, 0, { href: "/admin", label: "Admin" });

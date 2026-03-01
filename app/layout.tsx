@@ -3,6 +3,8 @@ import { AuthProvider } from "./context/AuthContext";
 import { ToastProvider } from "./context/ToastContext";
 import TopHeader from "./components/TopHeader";
 import DeactivatedBanner from "./components/DeactivatedBanner";
+import RouteModeBanner from "./components/RouteModeBanner";
+import AccountTypeModal from "./components/AccountTypeModal";
 
 export default function RootLayout({
   children,
@@ -16,6 +18,8 @@ export default function RootLayout({
           <ToastProvider>
             <div className="shell">
               <TopHeader />
+              <RouteModeBanner />
+              <AccountTypeModal />
               <main className="content">
                 <DeactivatedBanner />
                 {children}

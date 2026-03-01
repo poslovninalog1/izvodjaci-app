@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { useParams } from "next/navigation";
+import { useState, useEffect, useRef, useCallback } from "react";
+import { useParams, useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "../../context/AuthContext";
 import { supabase } from "@/src/lib/supabaseClient";
@@ -34,8 +34,11 @@ const DEV = process.env.NODE_ENV === "development";
 
 export default function JobDetailPage() {
   const params = useParams();
+  const searchParams = useSearchParams();
+  const router = useRouter();
   const { user, profile } = useAuth();
   const idParam = typeof params.id === "string" ? params.id : params.id?.[0] ?? "";
+  const proposalFormRef = useRef<HTMLDivElement>(null);
 
   const [job, setJob] = useState<Job | null>(null);
   const [categoryName, setCategoryName] = useState<string | null>(null);
@@ -43,6 +46,44 @@ export default function JobDetailPage() {
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [proposalCount, setProposalCount] = useState<number | null>(null);
   const [showReport, setShowReport] = useState(false);
+
+  const actionProposal = searchParams.get("action") === "proposal";
+  if (DEV) console.debug("[job-detail] action param:", searchParams.get("action"), "actionProposal:", actionProposal);
+
+  useEffect(() => {
+    if (actionProposal && !user) {
+      const next = `/jobs/${idParam}?action=proposal`;
+      router.replace(`/login?next=${encodeURIComponent(next)}`);
+      return;
+    }
+  }, [actionProposal, user, idParam, router]);
+
+  const handleProposalFormMounted = useCallback(() => {
+    if (!actionProposal) return;
+    const el = proposalFormRef.current;
+    if (!el) {
+      if (DEV) console.debug("[job-detail] ProposalForm onMounted but ref is null");
+      return;
+    }
+    if (DEV) console.debug("[job-detail] ProposalForm mounted, scrolling and focusing");
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+    const firstField = el.querySelector<HTMLTextAreaElement | HTMLInputElement>("[data-proposal-first-field]");
+    if (firstField) {
+      requestAnimationFrame(() => {
+        firstField.focus();
+        if (DEV) console.debug("[job-detail] proposal form focus succeeded:", document.activeElement === firstField);
+      });
+    } else if (DEV) console.debug("[job-detail] proposal form mounted but no [data-proposal-first-field] found");
+  }, [actionProposal]);
+
+  useEffect(() => {
+    if (!actionProposal || !job) return;
+    const el = proposalFormRef.current;
+    if (el) {
+      const first = el.querySelector("[data-proposal-first-field]");
+      if (first) handleProposalFormMounted();
+    }
+  }, [actionProposal, job, handleProposalFormMounted]);
 
   useEffect(() => {
     if (!idParam) {
@@ -226,14 +267,18 @@ export default function JobDetailPage() {
           )}
 
           {canApply && (
-            <>
-              <ProposalForm jobId={job.id} budgetType={job.budget_type} />
+            <div ref={proposalFormRef}>
+              <ProposalForm
+                jobId={job.id}
+                budgetType={job.budget_type}
+                onMounted={actionProposal ? handleProposalFormMounted : undefined}
+              />
               {!user && (
                 <p style={{ marginTop: 16, fontSize: 14, color: "var(--muted)" }}>
-                  <Link href={`/login?next=/jobs/${job.id}`} style={{ color: "var(--accent)" }}>Prijavi se</Link> kao izvođač da pošalješ ponudu.
+                  <Link href={`/login?next=${encodeURIComponent(`/jobs/${job.id}?action=proposal`)}`} style={{ color: "var(--accent)" }}>Prijavi se</Link> kao izvođač da pošalješ ponudu.
                 </p>
               )}
-            </>
+            </div>
           )}
 
           {job.status === "closed" && (

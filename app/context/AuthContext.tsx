@@ -16,6 +16,10 @@ import { getOnboardingCompleted, ONBOARDING_STORAGE_KEY, ONBOARDING_ROLE_KEY } f
 export type Profile = {
   id: string;
   role?: "client" | "freelancer" | "admin" | null;
+  /** Current mode for UI: client vs freelancer (persisted in DB, updated via set_active_role RPC). */
+  active_role?: "client" | "freelancer" | null;
+  /** Required when acting as freelancer: 'physical' | 'legal'. */
+  account_type?: "physical" | "legal" | null;
   name?: string | null;
   municipalities?: string | null;
   skills?: string | null;

@@ -1,10 +1,12 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { useAuth } from "../../context/AuthContext";
+import { useActiveRole } from "@/src/lib/role/useActiveRole";
 import { supabase } from "@/src/lib/supabaseClient";
 import { useToast } from "../../context/ToastContext";
+import { buildProposalInsertPayload } from "@/src/lib/proposals/compat";
 import Textarea from "../../components/ui/Textarea";
 import Input from "../../components/ui/Input";
 import Button from "../../components/ui/Button";
@@ -13,10 +15,17 @@ import Card from "../../components/ui/Card";
 type Props = {
   jobId: number | string;
   budgetType: string | null;
+  /** Called when form is mounted and ready (e.g. for scroll/focus from parent). */
+  onMounted?: () => void;
 };
 
-export default function ProposalForm({ jobId, budgetType }: Props) {
+export default function ProposalForm({ jobId, budgetType, onMounted }: Props) {
   const { user, profile } = useAuth();
+  const { role: activeRole } = useActiveRole();
+  const formRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (onMounted && formRef.current) onMounted();
+  }, [onMounted]);
   const toast = useToast();
   const [existingProposal, setExistingProposal] = useState<{ id: number } | null>(null);
   const [checking, setChecking] = useState(true);
@@ -69,27 +78,48 @@ export default function ProposalForm({ jobId, budgetType }: Props) {
     }
 
     setSubmitting(true);
-    // Only columns that exist in public.proposals (id, job_id, freelancer_id, cover_letter, proposed_rate, proposed_fixed, status, created_at; + rejection_reason if 00013 applied)
-    const payload: Record<string, unknown> = {
-      job_id: Number(jobId),
-      freelancer_id: user.id,
-      cover_letter: coverLetter.trim(),
-      proposed_fixed: isFixed ? Number(proposedFixed) : null,
-      proposed_rate: !isFixed ? Number(proposedRate) : null,
-      status: "submitted",
-    };
+    const payload = buildProposalInsertPayload({
+      jobId: String(jobId),
+      userId: user.id,
+      coverLetter: coverLetter.trim(),
+      budgetType,
+      proposedFixed: isFixed && proposedFixed.trim() ? Number(proposedFixed) : null,
+      proposedRate: !isFixed && proposedRate.trim() ? Number(proposedRate) : null,
+    });
 
     try {
       const { data: inserted, error: err } = await supabase.from("proposals").insert([payload]).select("id").single();
       if (process.env.NODE_ENV === "development") {
-        console.debug("[proposals insert]", { payload: { job_id: payload.job_id, freelancer_id: payload.freelancer_id, status: payload.status }, readRow: inserted, readErr: err ? { message: err.message, code: err.code } : null });
+        console.debug("[proposals insert]", {
+          payload,
+          insertedId: inserted?.id,
+          error: err
+            ? { code: err.code, message: err.message, details: err.details, hint: (err as { hint?: string }).hint }
+            : null,
+        });
       }
       if (err) {
         if (err.code === "23505") {
-          setError("Već si poslao ponudu na ovaj posao.");
+          const msg = "Već si poslao ponudu na ovaj posao.";
+          setError(msg);
           setExistingProposal({ id: 0 });
-        } else if (err.code === "42501" || err.message?.toLowerCase().includes("policy") || err.message?.toLowerCase().includes("row level")) {
-          setError("Nemaš dozvolu da pošalješ ponudu (proveri da li si prijavljen kao izvođač).");
+        } else if (
+          err.code === "42501" ||
+          err.message?.toLowerCase().includes("policy") ||
+          err.message?.toLowerCase().includes("row level") ||
+          err.message?.toLowerCase().includes("row-level")
+        ) {
+          const msg = "Ne možeš poslati ponudu: nalog nije izvođač ili nemaš pravo pristupa poslu.";
+          setError(msg);
+          toast.error(msg);
+        } else if (
+          err.code === "23514" ||
+          err.message?.toLowerCase().includes("check") ||
+          err.message?.toLowerCase().includes("constraint")
+        ) {
+          const msg = "Baza nije usklađena (status flow).";
+          setError(msg);
+          toast.error(msg);
         } else {
           setError("Greška: " + err.message);
         }
@@ -103,6 +133,16 @@ export default function ProposalForm({ jobId, budgetType }: Props) {
   };
 
   if (checking || !user || profile?.role !== "freelancer" || profile?.deactivated) return null;
+
+  if (activeRole !== "freelancer") {
+    return (
+      <Card style={{ marginTop: 16 }}>
+        <p style={{ margin: 0, fontSize: 14, color: "var(--muted)" }}>
+          Prebaci na režim Izvođač da pošalješ ponudu.
+        </p>
+      </Card>
+    );
+  }
 
   if (existingProposal || submitted) {
     return (
@@ -118,11 +158,13 @@ export default function ProposalForm({ jobId, budgetType }: Props) {
   }
 
   return (
-    <form onSubmit={handleSubmit} style={{ marginTop: 16 }}>
-      <h3 style={{ margin: "0 0 12px", fontSize: 16, fontWeight: 600 }}>Pošalji ponudu</h3>
-      <div style={{ marginBottom: 12 }}>
+    <div ref={formRef}>
+      <form onSubmit={handleSubmit} style={{ marginTop: 16 }}>
+        <h3 style={{ margin: "0 0 12px", fontSize: 16, fontWeight: 600 }}>Pošalji ponudu</h3>
+        <div style={{ marginBottom: 12 }}>
         <label style={{ display: "block", marginBottom: 4, fontSize: 13, color: "var(--muted)" }}>Pismo namjere (min. 50 karaktera) *</label>
         <Textarea
+          data-proposal-first-field
           value={coverLetter}
           onChange={(e) => setCoverLetter(e.target.value)}
           required
@@ -161,5 +203,6 @@ export default function ProposalForm({ jobId, budgetType }: Props) {
         {submitting ? "Šaljem..." : "Pošalji ponudu"}
       </Button>
     </form>
+    </div>
   );
 }

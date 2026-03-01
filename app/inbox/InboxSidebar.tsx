@@ -7,220 +7,134 @@ import { supabase } from "@/src/lib/supabaseClient";
 import { relativeTime } from "@/src/lib/time";
 import Card from "../components/ui/Card";
 
-type ConversationItem = {
-  id: string;
-  type: string;
-  contract_id: number | null;
-  pair_key: string | null;
-  created_at: string;
-  otherUserName: string;
-  jobTitle: string | null;
-  lastMessageText: string | null;
-  lastMessageAt: string | null;
-  unreadCount: number;
+export type InboxThread = {
+  conversation_id: string | number;
+  title: string | null;
+  other_user_name?: string | null;
+  username?: string | null;
+  last_message_at: string | null;
+  last_message_preview?: string | null;
+  last_message_type?: string | null;
+  unread_count: number;
 };
 
-type Props = { selectedId?: string; refreshTrigger?: number };
+function previewLabel(type: string | null | undefined): string {
+  if (!type) return "📎 Fajl";
+  switch (type) {
+    case "image": return "📷 Slika";
+    case "video": return "🎥 Video";
+    case "audio": return "🎵 Audio";
+    default: return "📎 Fajl";
+  }
+}
 
-export default function InboxSidebar({ selectedId, refreshTrigger }: Props) {
+type Props = { selectedId?: string; refreshTrigger?: number; clearedReadId?: string | null };
+
+type ParticipantRow = {
+  conversation_id: number;
+  user_id: string;
+  profiles: { full_name: string | null } | null;
+};
+
+export default function InboxSidebar({ selectedId, refreshTrigger, clearedReadId }: Props) {
   const { user } = useAuth();
-  const [conversations, setConversations] = useState<ConversationItem[]>([]);
+  const [threads, setThreads] = useState<InboxThread[]>([]);
+  const [namesByConversation, setNamesByConversation] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<{ message: string; code?: string } | null>(null);
+  const uid = user?.id ?? null;
 
   useEffect(() => {
-    if (!user) return;
-    const uid = user.id;
-
-    setConversations([]);
+    if (!uid) return;
+    setThreads([]);
+    setNamesByConversation({});
     setLoading(true);
+    setFetchError(null);
 
     async function load() {
-      if (process.env.NODE_ENV === "development") {
-        console.log("[inbox sidebar] auth uid:", uid);
-      }
-      // Membership-only: conversation_ids from conversation_participants where user_id = auth.uid() only.
-      const { data: parts } = await supabase
-        .from("conversation_participants")
-        .select("conversation_id, last_read_at")
-        .eq("user_id", uid);
+      const { data, error } = await supabase
+        .from("v_inbox_threads")
+        .select("conversation_id, title, other_user_name, last_message_at, last_message_preview, last_message_type, unread_count")
+        .eq("user_id", uid)
+        .order("last_message_at", { ascending: false, nullsFirst: false });
 
-      if (!parts || parts.length === 0) {
+      if (process.env.NODE_ENV === "development" && data?.length) {
+        const first = data[0] as Record<string, unknown>;
+        console.debug("[inbox threads] first thread all fields", first);
+      }
+
+      if (error) {
         if (process.env.NODE_ENV === "development") {
-          console.log("[inbox sidebar] fetched conversation_ids: (none)");
+          console.debug("[inbox threads] fetch error", { code: error.code, message: error.message, details: error.details, hint: (error as { hint?: string }).hint });
         }
-        setConversations([]);
+        setFetchError({ message: error.message, code: error.code });
+        setThreads([]);
         setLoading(false);
         return;
       }
 
-      const convIds = parts.map(
-        (p: { conversation_id: string | number }) => String(p.conversation_id)
-      );
-      if (process.env.NODE_ENV === "development") {
-        console.log("[inbox sidebar] fetched conversation_ids from conversation_participants:", convIds);
-      }
-      const lastReadMap: Record<string, string> = {};
-      parts.forEach(
-        (p: { conversation_id: string | number; last_read_at: string }) => {
-          lastReadMap[String(p.conversation_id)] = p.last_read_at;
-        }
-      );
-
-      // Load conversations where id IN those ids only (no other source).
-      const { data: convos } = await supabase
-        .from("conversations")
-        .select("id, type, contract_id, pair_key, created_at")
-        .in("id", convIds);
-
-      if (!convos) {
-        setConversations([]);
-        setLoading(false);
-        return;
-      }
-
-      const otherUserIds = new Set<string>();
-      const contractParticipants: Record<string, string> = {};
-      const contractJobTitles: Record<string, string | null> = {};
-      const contractIdsToFetch: number[] = [];
-
-      convos.forEach((c: Record<string, unknown>) => {
-        if (c.type === "direct" && c.pair_key) {
-          const [a, b] = (c.pair_key as string).split(":");
-          otherUserIds.add(a === uid ? b : a);
-        } else if (c.type === "contract" && c.contract_id != null) {
-          contractIdsToFetch.push(c.contract_id as number);
-        }
-      });
-
-      if (contractIdsToFetch.length > 0) {
-        const uniqueContractIds = [...new Set(contractIdsToFetch)];
-        const { data: contractRows } = await supabase
-          .from("contracts")
-          .select("id, client_id, freelancer_id, jobs(title)")
-          .in("id", uniqueContractIds);
-        (contractRows ?? []).forEach((ct: Record<string, unknown>) => {
-          const clientId = ct.client_id as string;
-          const freelancerId = ct.freelancer_id as string;
-          const otherId = clientId === uid ? freelancerId : clientId;
-          const jobs = ct.jobs;
-          const job = Array.isArray(jobs) ? jobs[0] : jobs;
-          const jobTitle = (job as { title?: string })?.title ?? null;
-          otherUserIds.add(otherId);
-          convos
-            .filter((c: Record<string, unknown>) => c.contract_id === ct.id)
-            .forEach((c: Record<string, unknown>) => {
-              const cid = String(c.id);
-              contractParticipants[cid] = otherId;
-              contractJobTitles[cid] = jobTitle;
-            });
-        });
-      }
-
-      const profileIds = [...otherUserIds];
-      let profileMap: Record<string, string> = {};
-      if (profileIds.length > 0) {
-        const { data: profiles } = await supabase
-          .from("profiles")
-          .select("id, full_name")
-          .in("id", profileIds);
-        (profiles ?? []).forEach(
-          (p: { id: string; full_name: string | null }) => {
-            profileMap[p.id] = p.full_name ?? "—";
-          }
-        );
-      }
-
-      const { data: msgs } = await supabase
-        .from("messages")
-        .select("conversation_id, text, created_at")
-        .in("conversation_id", convIds)
-        .order("created_at", { ascending: false });
-
-      const lastMsgMap: Record<
-        string,
-        { text: string; created_at: string }
-      > = {};
-      (msgs ?? []).forEach(
-        (m: {
-          conversation_id: string | number;
-          text: string;
-          created_at: string;
-        }) => {
-          const cid = String(m.conversation_id);
-          if (!lastMsgMap[cid]) {
-            lastMsgMap[cid] = {
-              text: m.text,
-              created_at: m.created_at,
-            };
-          }
-        }
-      );
-
-      const { data: unreads, error: unreadErr } = await supabase
-        .from("v_unread_counts")
-        .select("conversation_id, unread_count")
-        .eq("user_id", uid);
-      const unreadMap: Record<string, number> = {};
-      ((unreads as { conversation_id: string | number; unread_count: number }[]) ?? []).forEach((u) => {
-        unreadMap[String(u.conversation_id)] = Number(u.unread_count);
-      });
-      if (process.env.NODE_ENV === "development") {
-        console.debug("[unread view]", { error: unreadErr ? { message: unreadErr.message, code: unreadErr.code } : null, data: unreads });
-      }
-
-      const items: ConversationItem[] = convos.map(
-        (c: Record<string, unknown>) => {
-          let otherName = "—";
-          let jobTitle: string | null = null;
-          const cid = String(c.id);
-
-          if (c.type === "direct" && c.pair_key) {
-            const [a, b] = (c.pair_key as string).split(":");
-            const otherId = a === uid ? b : a;
-            otherName = profileMap[otherId] ?? "—";
-          } else if (c.type === "contract") {
-            const otherId = contractParticipants[cid];
-            if (otherId) otherName = profileMap[otherId] ?? "—";
-            jobTitle = contractJobTitles[cid] ?? null;
-          }
-
-          return {
-            id: cid,
-            type: c.type as string,
-            contract_id: c.contract_id as number | null,
-            pair_key: c.pair_key as string | null,
-            created_at: c.created_at as string,
-            otherUserName: otherName,
-            jobTitle,
-            lastMessageText: lastMsgMap[cid]?.text ?? null,
-            lastMessageAt: lastMsgMap[cid]?.created_at ?? null,
-            unreadCount: unreadMap[cid] ?? 0,
-          };
-        }
-      );
-
-      items.sort((a, b) => {
-        const ta = a.lastMessageAt ?? a.created_at;
-        const tb = b.lastMessageAt ?? b.created_at;
-        return new Date(tb).getTime() - new Date(ta).getTime();
-      });
-
-      setConversations(items);
+      const list = (data as InboxThread[]) ?? [];
+      setFetchError(null);
+      setThreads(list);
       setLoading(false);
-      if (process.env.NODE_ENV === "development") {
-        const renderedIds = items.map((i) => i.id);
-        console.log("[inbox sidebar] final rendered conversation IDs (links use only these):", renderedIds);
-      }
+
+      if (list.length === 0) return;
+
+      const conversationIds = list.map((t) => t.conversation_id);
+      const { data: participantData } = await supabase
+        .from("conversation_participants")
+        .select("conversation_id, user_id, profiles(full_name)")
+        .in("conversation_id", conversationIds)
+        .neq("user_id", uid);
+
+      const map: Record<string, string> = {};
+      (participantData as ParticipantRow[] | null)?.forEach((row) => {
+        const key = String(row.conversation_id);
+        const raw = row.profiles?.full_name;
+        const value = (raw != null && String(raw).trim() !== "") ? String(raw).trim() : "Korisnik";
+        map[key] = value;
+        if (process.env.NODE_ENV === "development") {
+          console.debug("[inbox sidebar] resolved name", { conversation_id: key, resolvedName: value });
+        }
+      });
+      setNamesByConversation(map);
     }
 
     load();
-  }, [user?.id, selectedId, refreshTrigger]);
+  }, [uid, refreshTrigger]);
+
+  // Optimistički: nakon mark-as-read postavi unread_count=0 za taj conversationId.
+  useEffect(() => {
+    if (!clearedReadId) return;
+    setThreads((prev) => {
+      const next = prev.map((t) =>
+        String(t.conversation_id) === clearedReadId ? { ...t, unread_count: 0 } : t
+      );
+      if (process.env.NODE_ENV === "development") {
+        console.debug("[threads] unread_count optimistically set to 0 for", clearedReadId);
+      }
+      return next;
+    });
+  }, [clearedReadId]);
 
   if (loading) {
     return <p style={{ color: "var(--muted)" }}>Učitavanje...</p>;
   }
 
-  if (conversations.length === 0) {
+  if (fetchError) {
+    return (
+      <Card>
+        <p style={{ margin: 0, color: "var(--danger)" }}>Greška pri učitavanju inbox-a.</p>
+        {process.env.NODE_ENV === "development" && (
+          <p style={{ margin: "8px 0 0", fontSize: 12, fontFamily: "monospace", color: "var(--muted)" }}>
+            {fetchError.code} — {fetchError.message}
+          </p>
+        )}
+      </Card>
+    );
+  }
+
+  if (threads.length === 0) {
     return (
       <Card>
         <p style={{ margin: 0, color: "var(--muted)" }}>Nema razgovora.</p>
@@ -230,18 +144,21 @@ export default function InboxSidebar({ selectedId, refreshTrigger }: Props) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-      {conversations.map((c) => {
-        const active = selectedId === c.id;
-        const snippet = c.lastMessageText
-          ? c.lastMessageText.length > 60
-            ? c.lastMessageText.slice(0, 60) + "…"
-            : c.lastMessageText
-          : null;
+      {threads.map((t) => {
+        const cid = String(t.conversation_id);
+        const active = selectedId === cid;
+        const unread = (t.unread_count ?? 0) > 0;
+        const previewText =
+          t.last_message_preview != null && String(t.last_message_preview).trim() !== ""
+            ? String(t.last_message_preview).length > 60
+              ? String(t.last_message_preview).slice(0, 60) + "…"
+              : String(t.last_message_preview)
+            : previewLabel(t.last_message_type);
 
         return (
           <Link
-            key={c.id}
-            href={`/inbox/${c.id}`}
+            key={cid}
+            href={`/inbox/${cid}`}
             style={{ textDecoration: "none" }}
           >
             <Card
@@ -253,87 +170,58 @@ export default function InboxSidebar({ selectedId, refreshTrigger }: Props) {
                 transition: "border-color 0.15s, background 0.15s",
               }}
             >
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "flex-start",
-                  gap: 8,
-                }}
-              >
-                <div style={{ minWidth: 0, flex: 1 }}>
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                    }}
-                  >
-                    <span
-                      style={{
-                        fontSize: 15,
-                        fontWeight: (selectedId === c.id ? 0 : c.unreadCount) > 0 ? 700 : 500,
-                        color: "var(--text)",
-                      }}
-                    >
-                      {c.otherUserName}
-                    </span>
-                    {selectedId !== c.id && c.unreadCount > 0 && (
-                      <span
-                        style={{
-                          background: "var(--accent)",
-                          color: "#fff",
-                          fontSize: 11,
-                          fontWeight: 600,
-                          padding: "1px 7px",
-                          borderRadius: 10,
-                          lineHeight: "18px",
-                        }}
-                      >
-                        {c.unreadCount}
-                      </span>
-                    )}
-                  </div>
-                  {c.jobTitle && (
-                    <p
-                      style={{
-                        margin: "2px 0 0",
-                        fontSize: 12,
-                        color: "var(--accent)",
-                      }}
-                    >
-                      {c.jobTitle}
-                    </p>
-                  )}
-                  {snippet && (
-                    <p
-                      style={{
-                        margin: "4px 0 0",
-                        fontSize: 13,
-                        color: "var(--muted)",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {snippet}
-                    </p>
-                  )}
-                </div>
+              {/* Prva linija: title preko cijele širine, desno timestamp */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
                 <span
                   style={{
-                    fontSize: 12,
-                    color: "var(--muted)",
+                    fontSize: 15,
+                    fontWeight: unread ? 700 : 500,
+                    color: "var(--text)",
+                    flex: 1,
+                    minWidth: 0,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
                     whiteSpace: "nowrap",
-                    flexShrink: 0,
                   }}
                 >
-                  {c.lastMessageAt
-                    ? relativeTime(c.lastMessageAt)
-                    : c.created_at
-                      ? relativeTime(c.created_at)
-                      : "—"}
+                  {namesByConversation[cid] || "Korisnik"}
                 </span>
+                <span style={{ fontSize: 12, color: "var(--muted)", whiteSpace: "nowrap", flexShrink: 0 }}>
+                  {t.last_message_at ? relativeTime(t.last_message_at) : "—"}
+                </span>
+              </div>
+              {/* Druga linija: preview + unread badge desno (samo ako unread_count > 0) */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginTop: 6 }}>
+                <p
+                  style={{
+                    margin: 0,
+                    fontSize: 13,
+                    color: "var(--muted)",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                    flex: 1,
+                    minWidth: 0,
+                  }}
+                >
+                  {previewText}
+                </p>
+                {unread && (
+                  <span
+                    style={{
+                      background: "var(--accent)",
+                      color: "#fff",
+                      fontSize: 11,
+                      fontWeight: 600,
+                      padding: "1px 7px",
+                      borderRadius: 10,
+                      lineHeight: "18px",
+                      flexShrink: 0,
+                    }}
+                  >
+                    {t.unread_count}
+                  </span>
+                )}
               </div>
             </Card>
           </Link>
