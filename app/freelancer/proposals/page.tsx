@@ -14,16 +14,17 @@ import { getProposalStatusLabel, getProposalPriceDisplay, normalizeProposalStatu
 
 type ProposalRow = {
   id: number;
-  job_id: number;
-  freelancer_id?: string;
-  cover_letter: string | null;
-  proposed_rate: number | null;
-  proposed_fixed: number | null;
-  status: string | null;
-  rejection_reason: string | null;
+  job_id: string;
+  freelancer_id: string;
+  freelancer_name: string;
+  job_title: string;
+  job_client_id: string;
   created_at: string;
-  job_title?: string | null;
-  freelancer_name?: string | null;
+  status: string;
+  cover_letter: string | null;
+  proposed_fixed: number | null;
+  proposed_rate: number | null;
+  rejection_reason?: string | null;
 };
 
 export default function FreelancerProposalsPage() {
@@ -150,7 +151,7 @@ export default function FreelancerProposalsPage() {
     return <Badge variant="accent">{label}</Badge>;
   };
 
-  const getJobTitle = (p: ProposalRow) => (p.job_title && String(p.job_title).trim()) || "—";
+  const getJobTitle = (p: ProposalRow) => (p.job_title ? String(p.job_title).trim() : "") || "—";
 
   if (authLoading || !user || !canAccessFreelancerProposals) {
     return (

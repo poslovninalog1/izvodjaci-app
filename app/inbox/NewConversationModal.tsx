@@ -37,15 +37,15 @@ export default function NewConversationModal({ onClose }: Props) {
       const q = query.trim();
       const { data } = await supabase
         .from("profiles")
-        .select("id, full_name")
+        .select("id, full_name, name")
         .ilike("full_name", `%${q}%`)
         .not("deactivated", "is", true)
         .limit(10);
 
-      const rows = (data ?? []) as { id: string; full_name: string | null }[];
+      const rows = (data ?? []) as { id: string; full_name: string | null; name?: string | null }[];
       const mapped: ProfileSearchResult[] = rows.map((p) => ({
         id: p.id,
-        displayName: p.full_name?.trim() || "Korisnik",
+        displayName: (p.full_name ?? p.name)?.trim() || "—",
       }));
       setResults(mapped);
 

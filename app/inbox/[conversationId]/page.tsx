@@ -5,14 +5,16 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "../../context/AuthContext";
 import { supabase } from "@/src/lib/supabaseClient";
-import { relativeTime } from "@/src/lib/time";
+import { relativeTime, messageDayLabel } from "@/src/lib/time";
 import {
   isValidConversationId,
   getMessageTypeFromMime,
   sanitizeFilename,
 } from "@/src/lib/messagingTypes";
 import ReportModal from "../../components/ReportModal";
-import InboxSidebar from "../InboxSidebar";
+import { useInboxContext } from "../InboxContext";
+import ParticipantDrawer from "../ParticipantDrawer";
+import ParticipantPanel from "../ParticipantPanel";
 import Card from "../../components/ui/Card";
 import Textarea from "../../components/ui/Textarea";
 import Button from "../../components/ui/Button";
@@ -38,6 +40,7 @@ type ConversationMeta = {
   contract_id: number | null;
   pair_key: string | null;
   otherUserName: string;
+  otherUserId: string | null;
   jobTitle: string | null;
 };
 
@@ -67,16 +70,26 @@ function signedUrlCacheKey(bucket: string, path: string): string {
   return `${bucket}:${path}`;
 }
 
+/** Convert route param to number for bigint RPC; null if invalid (avoids "best candidate" error). */
+function toConvIdNum(conversationId: string): number | null {
+  const n = Number(conversationId);
+  if (!Number.isFinite(n) || n !== Math.floor(n)) return null;
+  return n;
+}
+
 export default function InboxChatPage() {
   const params = useParams();
   const router = useRouter();
   const { user, profile, loading: authLoading } = useAuth();
   const rawId = (params.conversationId as string) ?? "";
   const conversationId = isValidConversationId(rawId) ? rawId : "";
+  const convIdNum = conversationId ? toConvIdNum(conversationId) : null;
+  const invalidConversationId = rawId !== "" && !conversationId;
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [meta, setMeta] = useState<ConversationMeta | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [accessDenied, setAccessDenied] = useState(false);
   const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null);
   const [text, setText] = useState("");
@@ -84,6 +97,8 @@ export default function InboxChatPage() {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
   const [showReport, setShowReport] = useState(false);
+  const [isParticipantOpen, setParticipantOpen] = useState(false);
+  const [showDebug, setShowDebug] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
@@ -91,18 +106,30 @@ export default function InboxChatPage() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const chatRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [inboxRefreshTrigger, setInboxRefreshTrigger] = useState(0);
-  const [clearedReadId, setClearedReadId] = useState<string | null>(null);
+  const lastLoadedConversationIdRef = useRef<string | null>(null);
+  const markReadDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const requestIdRef = useRef(0);
+  const inboxContext = useInboxContext();
+  const inboxContextRef = useRef(inboxContext);
+  inboxContextRef.current = inboxContext;
   const [senderNames, setSenderNames] = useState<Record<string, string>>({});
 
+  const DEV = process.env.NODE_ENV === "development";
+
   const markAsRead = useCallback(async () => {
-    if (!user) return;
-    await supabase
-      .from("conversation_participants")
-      .update({ last_read_at: new Date().toISOString() })
-      .eq("conversation_id", conversationId)
-      .eq("user_id", user.id);
-  }, [user, conversationId]);
+    if (!user || convIdNum === null) return;
+    const { data, error } = await supabase.rpc("mark_conversation_read", {
+      p_conversation_id: convIdNum,
+    });
+    if (process.env.NODE_ENV === "development") {
+      console.debug("[mark_read rpc]", { conversationId, convIdNum, data, error });
+    }
+    if (error) return;
+    if (data != null) {
+      inboxContextRef.current?.setClearedReadId(conversationId);
+      inboxContextRef.current?.triggerRefresh();
+    }
+  }, [user, conversationId, convIdNum]);
 
   // Resolve signed URLs for messages that have attachment_path; cache in state
   useEffect(() => {
@@ -144,98 +171,79 @@ export default function InboxChatPage() {
   }, [user, authLoading, router, conversationId]);
 
   useEffect(() => {
-    if (!user || !conversationId) return;
+    if (process.env.NODE_ENV === "development") console.count("ConversationPage mount");
+    return () => {
+      if (process.env.NODE_ENV === "development") console.count("ConversationPage unmount");
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!user || !conversationId || convIdNum === null) {
+      if (invalidConversationId) setLoading(false);
+      return;
+    }
     const uid = user.id;
+    const currentConvId = conversationId;
+    const currentConvIdNum = convIdNum;
+    const rid = ++requestIdRef.current;
+    const isInitialLoad = lastLoadedConversationIdRef.current !== currentConvId;
+
+    if (DEV) console.time("inbox-convo-fetch");
+    if (isInitialLoad) setLoading(true);
+    else setIsRefreshing(true);
 
     async function load() {
-      const devLog =
-        process.env.NODE_ENV === "development"
-          ? (obj: Record<string, unknown>) =>
-              console.log("[inbox conversation]", obj)
-          : () => {};
-
-      if (process.env.NODE_ENV === "development") {
-        console.debug("[inbox conversation] fetch start", { authUserId: uid, conversationId });
+      if (DEV) {
+        console.debug("[inbox conversation] fetch start", { authUserId: uid, conversationId: currentConvId, requestId: rid });
       }
-      devLog({ routeParam: "conversationId", value: conversationId });
 
-      const {
-        data: { user: authUser },
-        error: authErr,
-      } = await supabase.auth.getUser();
-      const authUid = authUser?.id ?? null;
-      const authEmail = authUser?.email ?? null;
-      devLog({
-        auth: { uid: authUid, email: authEmail, error: authErr?.message },
-      });
+      const [participantRes, convRes, msgRes] = await Promise.all([
+        supabase
+          .from("conversation_participants")
+          .select("conversation_id, user_id")
+          .eq("conversation_id", currentConvId)
+          .eq("user_id", uid)
+          .maybeSingle(),
+        supabase
+          .from("conversations")
+          .select("id, type, pair_key, contract_id, created_at")
+          .eq("id", currentConvId)
+          .maybeSingle(),
+        supabase
+          .from("messages")
+          .select(MESSAGE_SELECT)
+          .eq("conversation_id", currentConvId)
+          .order("created_at", { ascending: false })
+          .limit(PAGE_SIZE),
+      ]);
 
-      const participantRes = await supabase
-        .from("conversation_participants")
-        .select("conversation_id, user_id")
-        .eq("conversation_id", conversationId)
-        .eq("user_id", uid)
-        .maybeSingle();
+      if (rid !== requestIdRef.current) {
+        if (DEV) console.debug("[inbox conversation] stale result ignored", { requestId: rid });
+        setLoading(false);
+        setIsRefreshing(false);
+        return;
+      }
+
       const participantRow = participantRes.data;
-      const participantErr = participantRes.error;
-      devLog({
-        participantCheck: {
-          data: participantRow,
-          error: participantErr
-            ? {
-                code: participantErr.code,
-                message: participantErr.message,
-                details: (participantErr as { details?: string })?.details,
-              }
-            : null,
-        },
-      });
-
-      const convRes = await supabase
-        .from("conversations")
-        .select("id, type, pair_key, contract_id, created_at")
-        .eq("id", conversationId)
-        .maybeSingle();
       const convData = convRes.data;
       const convErr = convRes.error;
-      devLog({
-        conversationId,
-        conversationFetch: {
-          data: convData,
-          error: convErr
-            ? {
-                code: convErr.code,
-                message: convErr.message,
-                details: (convErr as { details?: string })?.details,
-                hint: (convErr as { hint?: string })?.hint,
-              }
-            : null,
-        },
-      });
-
-      const msgRes = await supabase
-        .from("messages")
-        .select(MESSAGE_SELECT)
-        .eq("conversation_id", conversationId)
-        .order("created_at", { ascending: false })
-        .limit(PAGE_SIZE);
       const msgRows = (msgRes.data as Message[] | null) ?? [];
-      const msgErr = msgRes.error;
-      devLog({
-        conversationId,
-        messagesFetch: {
-          count: msgRows.length,
-          error: msgErr
-            ? {
-                code: msgErr.code,
-                message: msgErr.message,
-                details: (msgErr as { details?: string })?.details,
-                hint: (msgErr as { hint?: string })?.hint,
-              }
-            : null,
-        },
-      });
 
-      const hasParticipantRow = !!participantRow;
+      if (DEV) {
+        console.timeEnd("inbox-convo-fetch");
+        console.debug("[inbox message fetch]", msgRows.length);
+      }
+
+      if (!participantRow) {
+        setAccessDenied(false);
+        setMeta(null);
+        setMessages([]);
+        setLoading(false);
+        setIsRefreshing(false);
+        lastLoadedConversationIdRef.current = null;
+        return;
+      }
+
       const hasConvData = !!convData;
       const convErrCode = convErr?.code ?? null;
       const convErrMessage = convErr?.message ?? null;
@@ -244,90 +252,71 @@ export default function InboxChatPage() {
         (convErrMessage?.toLowerCase().includes("permission denied") ?? false);
 
       setDebugInfo({
-        conversationId,
-        authUid,
-        authEmail,
-        authErr: authErr?.message ?? null,
+        conversationId: currentConvId,
+        authUid: uid,
+        authEmail: null,
+        authErr: null,
         convDataYesNo: hasConvData,
         convErrCode,
         convErrMessage,
-        participantRowYesNo: hasParticipantRow,
+        participantRowYesNo: true,
         messagesCount: msgRows.length,
         markReadUpdatedRow: null,
         markReadError: null,
       });
 
-      if (!authUid) {
-        setAccessDenied(false);
-        setMeta(null);
-        setLoading(false);
-        return;
-      }
-      if (hasParticipantRow && !hasConvData) {
-        setAccessDenied(false);
-        setMeta(null);
-        setLoading(false);
-        return;
-      }
-      if (!hasParticipantRow) {
-        setAccessDenied(false);
-        setMeta(null);
-        setLoading(false);
-        return;
-      }
       if (convErr && isPermissionDenied) {
         setAccessDenied(true);
         setMeta(null);
+        setMessages([]);
         setLoading(false);
+        setIsRefreshing(false);
+        lastLoadedConversationIdRef.current = null;
         return;
       }
       if (convErr || !convData) {
         setAccessDenied(false);
         setMeta(null);
+        setMessages([]);
         setLoading(false);
+        setIsRefreshing(false);
+        lastLoadedConversationIdRef.current = null;
         return;
       }
 
       setAccessDenied(false);
-      const nowIso = new Date().toISOString();
-      const { data: updatedRow, error: readErr } = await supabase
-        .from("conversation_participants")
-        .update({ last_read_at: nowIso })
-        .eq("conversation_id", conversationId)
-        .eq("user_id", uid)
-        .select("conversation_id, user_id, last_read_at")
-        .maybeSingle();
-      const markReadUpdatedRow =
-        updatedRow != null
-          ? {
-              conversation_id: String(updatedRow.conversation_id),
-              user_id: String(updatedRow.user_id),
-              last_read_at: String(updatedRow.last_read_at),
-            }
-          : null;
-      const markReadError =
-        readErr != null ? { message: readErr.message, code: readErr.code } : null;
-      if (process.env.NODE_ENV === "development") {
-        console.debug("[mark read]", { conversationId, uid, nowIso, updatedRow: markReadUpdatedRow, error: markReadError });
-        if (markReadUpdatedRow) {
-          console.debug("[mark read] last_read_at updated", markReadUpdatedRow.last_read_at);
-        }
-        if (readErr?.code === "42501") {
-          console.warn("[mark read] RLS UPDATE policy missing for conversation_participants. Apply migration 00018.");
-        }
+
+      const { data: rpcData, error: readErr } = await supabase.rpc("mark_conversation_read", {
+        p_conversation_id: currentConvIdNum,
+      });
+      if (DEV) {
+        console.debug("[mark_read rpc]", {
+          conversationId: currentConvId,
+          convIdNum: currentConvIdNum,
+          data: rpcData,
+          error: readErr,
+        });
       }
+      const updated = !readErr && rpcData != null;
       setDebugInfo((prev) =>
         prev
           ? {
               ...prev,
-              markReadUpdatedRow,
-              markReadError,
+              markReadUpdatedRow: updated
+                ? {
+                    conversation_id: currentConvId,
+                    user_id: uid,
+                    last_read_at:
+                      (rpcData as { last_read_at?: string })?.last_read_at ?? new Date().toISOString(),
+                  }
+                : null,
+              markReadError: readErr ? { message: readErr.message, code: readErr.code } : null,
             }
           : null
       );
-      if (!readErr && updatedRow) {
-        setInboxRefreshTrigger((t) => t + 1);
-        setClearedReadId(conversationId);
+      if (updated && inboxContextRef.current) {
+        inboxContextRef.current.setClearedReadId(currentConvId);
+        inboxContextRef.current.triggerRefresh();
       }
 
       const c = convData as Record<string, unknown>;
@@ -368,17 +357,21 @@ export default function InboxChatPage() {
         otherUserName = (prof as { full_name?: string })?.full_name ?? "—";
       }
 
+      if (currentConvId !== conversationId) return;
+
       setMeta({
         type: c.type as string,
         contract_id: c.contract_id as number | null,
         pair_key: c.pair_key as string | null,
         otherUserName,
+        otherUserId,
         jobTitle,
       });
 
       const loaded = [...msgRows].reverse();
       setMessages(loaded);
       setHasMore(msgRows.length >= PAGE_SIZE);
+      lastLoadedConversationIdRef.current = currentConvId;
 
       const senderIds = [...new Set(loaded.map((m) => m.sender_id).filter(Boolean))] as string[];
       if (senderIds.length > 0) {
@@ -395,9 +388,10 @@ export default function InboxChatPage() {
       }
 
       setLoading(false);
+      setIsRefreshing(false);
     }
     load();
-  }, [user?.id, conversationId, markAsRead]);
+  }, [user?.id, conversationId, convIdNum, invalidConversationId]);
 
   useEffect(() => {
     if (accessDenied && user) {
@@ -428,12 +422,17 @@ export default function InboxChatPage() {
             const { data: p } = await supabase.from("profiles").select("id, full_name").eq("id", newMsg.sender_id).single();
             if (p) setSenderNames((prev) => ({ ...prev, [newMsg.sender_id]: (p as { full_name: string | null }).full_name?.trim() || `${newMsg.sender_id.slice(0, 8)}…` }));
           }
-          markAsRead();
+          if (markReadDebounceRef.current) clearTimeout(markReadDebounceRef.current);
+          markReadDebounceRef.current = setTimeout(() => {
+            markReadDebounceRef.current = null;
+            markAsRead();
+          }, 500);
         }
       )
       .subscribe();
 
     return () => {
+      if (markReadDebounceRef.current) clearTimeout(markReadDebounceRef.current);
       supabase.removeChannel(channel);
     };
   }, [user?.id, conversationId, markAsRead]);
@@ -661,14 +660,6 @@ export default function InboxChatPage() {
     }
   };
 
-  if (authLoading || !user) {
-    return (
-      <div style={{ maxWidth: 900, margin: "0 auto" }}>
-        <p style={{ color: "var(--muted)" }}>Učitavanje...</p>
-      </div>
-    );
-  }
-
   if (!conversationId) {
     return (
       <div style={{ maxWidth: 900, margin: "0 auto" }}>
@@ -680,276 +671,230 @@ export default function InboxChatPage() {
     );
   }
 
-  if (loading) {
-    return (
-      <div style={{ maxWidth: 900, margin: "0 auto" }}>
-        <p style={{ color: "var(--muted)" }}>Učitavanje razgovora...</p>
-      </div>
-    );
-  }
-
-  if (!meta) {
-    let message = "Not found or no access.";
-    let linkHref = "/inbox";
-    let linkText = "← Nazad na Inbox";
-    if (debugInfo) {
-      if (!debugInfo.authUid) {
-        message = "Nisi ulogovan.";
-      } else if (
-        debugInfo.participantRowYesNo &&
-        !debugInfo.convDataYesNo
-      ) {
-        message = "Not found or no access.";
-        linkHref = "/inbox?new=1";
-        linkText = "← Započni novi razgovor";
-      } else if (!debugInfo.participantRowYesNo) {
-        message = "Not found or no access.";
-        linkHref = "/inbox?new=1";
-        linkText = "← Započni novi razgovor";
-      } else if (accessDenied) {
-        message = "Not found or no access.";
-        linkHref = "/inbox?new=1";
-        linkText = "← Započni novi razgovor";
-      }
-    } else if (accessDenied) {
-      message = "Not found or no access.";
-      linkHref = "/inbox?new=1";
-      linkText = "← Započni novi razgovor";
-    }
-
-    return (
-      <div style={{ maxWidth: 900, margin: "0 auto" }}>
-        <p style={{ marginBottom: 12 }}>{message}</p>
-        <Link href={linkHref} style={{ color: "var(--accent)" }}>
-          {linkText}
-        </Link>
-        {process.env.NODE_ENV === "development" && debugInfo && (
-          <div
-            style={{
-              marginTop: 24,
-              padding: 12,
-              background: "var(--panel2)",
-              border: "1px solid var(--border)",
-              borderRadius: "var(--radius-sm)",
-              fontSize: 12,
-              fontFamily: "monospace",
-            }}
-          >
-            <div>
-              <strong>Debug (dev)</strong>
-            </div>
-            <div>conversationId: {debugInfo.conversationId}</div>
-            <div>auth uid: {debugInfo.authUid ?? "—"}</div>
-            <div>convData: {debugInfo.convDataYesNo ? "yes" : "no"}</div>
-            <div>
-              convErr: {debugInfo.convErrCode ?? "—"}{" "}
-              {debugInfo.convErrMessage ?? ""}
-            </div>
-            <div>participantRow: {debugInfo.participantRowYesNo ? "yes" : "no"}</div>
-            <div>messages count: {debugInfo.messagesCount}</div>
-            <div>markReadUpdatedRow: {debugInfo.markReadUpdatedRow ? JSON.stringify(debugInfo.markReadUpdatedRow) : "—"}</div>
-            <div>markReadError: {debugInfo.markReadError ? JSON.stringify(debugInfo.markReadError) : "—"}</div>
-          </div>
-        )}
-      </div>
-    );
-  }
-
   const canSend =
     (text.trim().length > 0 || pendingFiles.length > 0) &&
     !sending &&
     !uploading &&
     !profile?.deactivated;
 
+  const isInitialLoading = loading && messages.length === 0;
+  const showChatArea = !authLoading && user;
+  const showInvalidId = showChatArea && invalidConversationId;
+  const showNoAccess = showChatArea && !meta && !isInitialLoading && !showInvalidId;
+  const showConversation = showChatArea && meta;
+
   return (
     <>
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "320px 1fr",
-          gap: 24,
-          maxWidth: 1000,
-          margin: "0 auto",
-          minHeight: "calc(100vh - 180px)",
-        }}
+      {/* CENTER: Chat (layout slots this in grid col 2) */}
+      <Card
+        className="flex flex-col min-w-0 overflow-hidden h-full min-h-0 w-full border-0 shadow-none rounded-none bg-transparent"
+        style={{ padding: 0 }}
       >
-        <div>
-          <h1 style={{ margin: "0 0 16px", fontSize: 22, fontWeight: 600 }}>
-            Inbox
-          </h1>
-          <InboxSidebar
-            key={user?.id ?? "anon"}
-            selectedId={conversationId}
-            refreshTrigger={inboxRefreshTrigger}
-            clearedReadId={clearedReadId}
-          />
-        </div>
-
-        <Card
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            padding: 0,
-            overflow: "hidden",
-          }}
-        >
-          <div
-            style={{
-              padding: "12px 16px",
-              borderBottom: "1px solid var(--border)",
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              flexWrap: "wrap",
-              gap: 8,
-            }}
-          >
-            <div>
-              <h2 style={{ margin: 0, fontSize: 17, fontWeight: 600 }}>
-                {meta?.otherUserName ?? "…"}
-              </h2>
-              {meta?.jobTitle && (
-                <p
-                  style={{
-                    margin: "2px 0 0",
-                    fontSize: 13,
-                    color: "var(--muted)",
-                  }}
-                >
-                  {meta.jobTitle}
-                </p>
+          {!showChatArea ? (
+            <div className="flex-1 flex items-center justify-center min-h-[200px]">
+              <p className="text-[var(--muted)] m-0">Učitavanje…</p>
+            </div>
+          ) : showInvalidId ? (
+            <div className="flex-1 flex flex-col p-6 min-h-0">
+              <p className="text-gray-700 mb-3">
+                Neispravan ID razgovora. Izaberi razgovor sa liste.
+              </p>
+              <Link href="/inbox" className="text-[var(--accent)] hover:underline">
+                ← Nazad na poruke
+              </Link>
+            </div>
+          ) : showNoAccess ? (
+            <div className="flex-1 flex flex-col p-6 min-h-0">
+              <p className="text-gray-700 mb-3">
+                {accessDenied ? "Not found or no access." : "Nema pristupa ili razgovor ne postoji."}
+              </p>
+              <Link href="/inbox?new=1" className="text-[var(--accent)] hover:underline mb-2">
+                ← Započni novi razgovor
+              </Link>
+              {process.env.NODE_ENV === "development" && (
+                <Button type="button" variant="secondary" onClick={() => setShowDebug((d) => !d)} style={{ alignSelf: "flex-start", fontSize: 12 }}>
+                  {showDebug ? "Sakrij debug" : "Debug"}
+                </Button>
               )}
             </div>
-            <Button
-              variant="secondary"
-              onClick={() => setShowReport(true)}
-              style={{ padding: "5px 10px", fontSize: 12 }}
-            >
-              Prijavi
-            </Button>
-          </div>
+          ) : (
+            /* Always render same structure when we have or are loading a conversation */
+            <div className="flex flex-col h-full min-h-0 flex-1">
+              {/* Header — shrink-0 */}
+              <header
+                className="shrink-0 px-4 py-3 border-b border-[var(--border)] flex justify-between items-center flex-wrap gap-2"
+                style={{ minHeight: 52 }}
+              >
+                {!meta ? (
+                  <>
+                    <div className="h-5 w-[120px] rounded bg-gray-200 animate-pulse" />
+                    <div className="h-4 w-16 rounded bg-gray-200 animate-pulse" />
+                  </>
+                ) : (
+                  <>
+                    <div className="min-w-0 flex-1">
+                      <button
+                        type="button"
+                        onClick={() => setParticipantOpen(true)}
+                        className="w-full text-left rounded-lg py-1 pr-2 -ml-1 hover:bg-gray-50 transition-colors cursor-pointer border-0 bg-transparent"
+                      >
+                        <div className="flex items-center gap-2 flex-wrap min-w-0">
+                          <span className="w-8 h-8 rounded-full flex items-center justify-center text-sm font-semibold bg-gray-200 text-gray-700 shrink-0">
+                            {(meta.otherUserName ?? "?").trim().charAt(0).toUpperCase()}
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <h2 className="m-0 text-lg font-semibold text-gray-900 truncate">
+                              {meta.otherUserName ?? "…"}
+                            </h2>
+                            {meta.jobTitle && (
+                              <p className="mt-0.5 text-sm text-[var(--muted)] m-0 truncate">{meta.jobTitle}</p>
+                            )}
+                          </div>
+                          {isRefreshing && (
+                            <span className="text-xs text-gray-500 flex items-center gap-1 shrink-0">
+                              <span className="inline-block w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-pulse" aria-hidden />
+                              Osvežavam…
+                            </span>
+                          )}
+                        </div>
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {process.env.NODE_ENV === "development" && (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          onClick={() => setShowDebug((d) => !d)}
+                          style={{ padding: "4px 8px", fontSize: 11 }}
+                        >
+                          {showDebug ? "Sakrij debug" : "Debug"}
+                        </Button>
+                      )}
+                      <Button
+                        variant="secondary"
+                        onClick={() => setShowReport(true)}
+                        style={{ padding: "5px 10px", fontSize: 12 }}
+                      >
+                        Prijavi
+                      </Button>
+                    </div>
+                  </>
+                )}
+              </header>
 
-          <div
-            ref={chatRef}
-            style={{
-              flex: 1,
-              overflowY: "auto",
-              padding: 16,
-              display: "flex",
-              flexDirection: "column",
-              gap: 8,
-              minHeight: 200,
-            }}
-          >
+              {/* Message list — flex-1 min-h-0 so it scrolls */}
+              <div
+                ref={chatRef}
+                className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden flex flex-col p-4 gap-2"
+                style={{ minHeight: 200 }}
+              >
+            {isInitialLoading ? (
+              <div className="flex flex-col gap-3 py-2">
+                {[1, 2, 3, 4].map((i) => (
+                  <div
+                    key={i}
+                    className="h-11 rounded-lg bg-gray-200 animate-pulse"
+                    style={{
+                      width: i % 2 === 0 ? "70%" : "50%",
+                      alignSelf: i % 2 === 0 ? "flex-end" : "flex-start",
+                    }}
+                  />
+                ))}
+              </div>
+            ) : (
+              <>
             {hasMore && (
               <button
                 type="button"
                 onClick={loadMore}
                 disabled={loadingMore}
-                style={{
-                  alignSelf: "center",
-                  padding: "6px 16px",
-                  fontSize: 13,
-                  color: "var(--accent)",
-                  background: "none",
-                  border: "1px solid var(--border)",
-                  borderRadius: "var(--radius-sm)",
-                  cursor: loadingMore ? "wait" : "pointer",
-                  marginBottom: 8,
-                }}
+                className="self-center py-1.5 px-4 text-sm text-[var(--accent)] bg-transparent border border-[var(--border)] rounded-md cursor-pointer mb-2 disabled:opacity-50"
               >
                 {loadingMore ? "Učitavam..." : "Starije poruke"}
               </button>
             )}
 
-            {!loading && messages.length === 0 && (
-              <p
-                style={{
-                  color: "var(--muted)",
-                  textAlign: "center",
-                  margin: "auto 0",
-                  fontSize: 14,
-                }}
-              >
+            {messages.length === 0 && (
+              <p className="text-[var(--muted)] text-center my-4 text-sm">
                 Nema poruka. Započni razgovor!
               </p>
             )}
 
-            {messages.map((m) => {
-              const mine = m.sender_id === user.id;
-              const isPending = String(m.id).startsWith("pending-");
-              const senderDisplay = senderNames[m.sender_id] ?? (m.sender_id ? `${m.sender_id.slice(0, 8)}…` : "—");
-              return (
-                <div
-                  key={m.id}
-                  style={{
-                    alignSelf: mine ? "flex-end" : "flex-start",
-                    maxWidth: "75%",
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: mine ? "flex-end" : "flex-start",
-                  }}
-                >
-                  <span style={{ fontSize: 11, color: "var(--muted)", marginBottom: 2 }}>
-                    {senderDisplay}
-                  </span>
-                  <div
-                    style={{
-                      padding: "10px 14px",
-                      borderRadius: mine
-                        ? "var(--radius-sm) var(--radius-sm) 4px var(--radius-sm)"
-                        : "var(--radius-sm) var(--radius-sm) var(--radius-sm) 4px",
-                      background: mine
-                        ? "rgba(220,38,38,0.08)"
-                        : "var(--panel2)",
-                      border: mine
-                        ? "1px solid rgba(220,38,38,0.2)"
-                        : "1px solid var(--border)",
-                    }}
-                  >
-                  {m.attachment_path ? (
-                    <>
-                      {renderAttachment(m)}
-                      {m.text && (
-                        <p
+            {messages.length > 0 && (() => {
+              const groups: { label: string; messages: Message[] }[] = [];
+              let currentLabel = "";
+              messages.forEach((m) => {
+                const label = messageDayLabel(m.created_at);
+                if (label !== currentLabel) {
+                  currentLabel = label;
+                  groups.push({ label, messages: [m] });
+                } else {
+                  groups[groups.length - 1].messages.push(m);
+                }
+              });
+              return groups.map((group, idx) => (
+                <div key={`${group.label}-${group.messages[0]?.id ?? idx}`} className="flex flex-col gap-2">
+                  <div className="flex justify-center py-2">
+                    <span className="text-xs font-medium text-[var(--muted)] bg-[var(--panel2)] px-3 py-1 rounded-full">
+                      {group.label}
+                    </span>
+                  </div>
+                  {group.messages.map((m) => {
+                    const mine = m.sender_id === user.id;
+                    const isPending = String(m.id).startsWith("pending-");
+                    const senderDisplay = senderNames[m.sender_id] ?? (m.sender_id ? `${m.sender_id.slice(0, 8)}…` : "—");
+                    return (
+                      <div
+                        key={m.id}
+                        className="flex flex-col max-w-[75%]"
+                        style={{
+                          alignSelf: mine ? "flex-end" : "flex-start",
+                          alignItems: mine ? "flex-end" : "flex-start",
+                        }}
+                      >
+                        <span className="text-[11px] text-[var(--muted)] mb-0.5">{senderDisplay}</span>
+                        <div
+                          className="px-3.5 py-2.5 rounded-lg"
                           style={{
-                            margin: "8px 0 0",
-                            fontSize: 14,
-                            whiteSpace: "pre-wrap",
-                            wordBreak: "break-word",
+                            borderRadius: mine
+                              ? "var(--radius-sm) var(--radius-sm) 4px var(--radius-sm)"
+                              : "var(--radius-sm) var(--radius-sm) var(--radius-sm) 4px",
+                            background: mine ? "rgba(220,38,38,0.08)" : "var(--panel2)",
+                            border: mine ? "1px solid rgba(220,38,38,0.2)" : "1px solid var(--border)",
                           }}
                         >
-                          {m.text}
-                        </p>
-                      )}
-                    </>
-                  ) : (
-                    <p
-                      style={{
-                        margin: 0,
-                        fontSize: 14,
-                        whiteSpace: "pre-wrap",
-                        wordBreak: "break-word",
-                      }}
-                    >
-                      {m.text || (isPending ? "Šaljem…" : "")}
-                    </p>
-                  )}
-                  <p
-                    style={{
-                      margin: "4px 0 0",
-                      fontSize: 11,
-                      color: "var(--muted)",
-                      textAlign: mine ? "right" : "left",
-                    }}
-                  >
-                    {relativeTime(m.created_at)}
-                  </p>
+                          {m.attachment_path ? (
+                            <>
+                              {renderAttachment(m)}
+                              {m.text != null && String(m.text).trim() !== "" && (
+                                <p className="mt-2 text-sm whitespace-pre-wrap break-words m-0 text-gray-900">{m.text}</p>
+                              )}
+                            </>
+                          ) : (
+                            <p className="m-0 text-sm whitespace-pre-wrap break-words text-gray-900">
+                              {m.text != null && String(m.text).trim() !== ""
+                                ? m.text
+                                : isPending
+                                  ? "Šaljem…"
+                                  : "\u00A0"}
+                            </p>
+                          )}
+                          <p
+                            className="mt-1 text-[11px] text-[var(--muted)] m-0"
+                            style={{ textAlign: mine ? "right" : "left" }}
+                          >
+                            {relativeTime(m.created_at)}
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-                </div>
-              );
-            })}
+              ));
+            })()}
             <div ref={bottomRef} />
+              </>
+            )}
           </div>
 
           <form
@@ -1081,48 +1026,50 @@ export default function InboxChatPage() {
               </Button>
             </div>
           </form>
-        </Card>
+            </div>
+          )}
+      </Card>
 
-        {showReport && (
-          <ReportModal
-            targetType="message"
-            targetId={String(conversationId)}
-            onClose={() => setShowReport(false)}
+      {/* Participant details drawer — opens from header click, overlay + slide-in */}
+      {meta && (
+        <ParticipantDrawer open={isParticipantOpen} onClose={() => setParticipantOpen(false)}>
+          <ParticipantPanel
+            meta={{ otherUserName: meta.otherUserName, otherUserId: meta.otherUserId, jobTitle: meta.jobTitle }}
+            onReportClick={() => {
+              setParticipantOpen(false);
+              setShowReport(true);
+            }}
           />
-        )}
-      </div>
-      {process.env.NODE_ENV === "development" && debugInfo && (
+        </ParticipantDrawer>
+      )}
+
+      {showReport && (
+        <ReportModal
+          targetType="message"
+          targetId={String(conversationId)}
+          onClose={() => setShowReport(false)}
+        />
+      )}
+
+      {process.env.NODE_ENV === "development" && showDebug && debugInfo && (
         <div
-          style={{
-            maxWidth: 1000,
-            margin: "24px auto 0",
-            padding: 12,
-            background: "var(--panel2)",
-            border: "1px solid var(--border)",
-            borderRadius: "var(--radius-sm)",
-            fontSize: 12,
-            fontFamily: "monospace",
-          }}
+          className="shrink-0 w-full max-w-[1000px] mx-auto mt-4 p-3 bg-gray-100 border border-gray-300 rounded text-xs font-mono overflow-auto"
+          style={{ maxHeight: 320 }}
         >
-          <div>
-            <strong>Debug (dev)</strong>
-          </div>
+          <div className="font-semibold text-gray-700 mb-2">Debug (dev)</div>
           <div>conversationId: {debugInfo.conversationId}</div>
           <div>auth uid: {debugInfo.authUid ?? "—"}</div>
           <div>convData: {debugInfo.convDataYesNo ? "yes" : "no"}</div>
-          <div>
-            convErr: {debugInfo.convErrCode ?? "—"}{" "}
-            {debugInfo.convErrMessage ?? ""}
-          </div>
+          <div>convErr: {debugInfo.convErrCode ?? "—"} {debugInfo.convErrMessage ?? ""}</div>
           <div>participantRow: {debugInfo.participantRowYesNo ? "yes" : "no"}</div>
           <div>messages count: {debugInfo.messagesCount}</div>
           <div>markReadUpdatedRow: {debugInfo.markReadUpdatedRow ? JSON.stringify(debugInfo.markReadUpdatedRow) : "—"}</div>
           <div>markReadError: {debugInfo.markReadError ? JSON.stringify(debugInfo.markReadError) : "—"}</div>
           {debugInfo.markReadError?.code === "42501" && (
-            <div style={{ color: "var(--danger)", marginTop: 6 }}>RLS UPDATE policy missing for conversation_participants. Apply migration 00018.</div>
+            <div className="text-red-600 mt-1.5">RLS UPDATE policy missing for conversation_participants. Apply migration 00018.</div>
           )}
           {(debugInfo.markReadUpdatedRow == null || debugInfo.markReadError != null) && debugInfo.markReadError?.code !== "42501" && (
-            <div style={{ color: "var(--danger)", marginTop: 6 }}>Mark-read failed or no row updated — badge may reappear.</div>
+            <div className="text-red-600 mt-1.5">Mark-read failed or no row updated — badge may reappear.</div>
           )}
         </div>
       )}

@@ -83,7 +83,12 @@ export default function LandingHero() {
       timersRef.current.forEach(clearTimeout);
       timersRef.current = [];
       if (mapRef.current) {
-        mapRef.current.remove();
+        try {
+          mapRef.current.off();
+          mapRef.current.remove();
+        } catch (_) {
+          // ignore Leaflet teardown errors (e.g. _leaflet_pos) when DOM is already gone
+        }
         mapRef.current = null;
       }
     };

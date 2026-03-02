@@ -15,19 +15,17 @@ import { getProposalStatusLabel, getProposalPriceDisplay, normalizeProposalStatu
 
 type ProposalRow = {
   id: number;
+  job_id: string;
   freelancer_id: string;
-  job_id: number;
-  cover_letter: string | null;
-  proposed_rate: number | null;
-  proposed_fixed: number | null;
-  amount: number | null;
-  status: string | null;
-  rejection_reason: string | null;
+  freelancer_name: string;
+  job_title: string;
+  job_client_id: string;
   created_at: string;
-  job_title?: string | null;
-  freelancer_name: string | null;
-  freelancer_username: string | null;
-  freelancer_avatar_url: string | null;
+  status: string;
+  cover_letter: string | null;
+  proposed_fixed: number | null;
+  proposed_rate: number | null;
+  rejection_reason?: string | null;
 };
 
 type Job = {
@@ -116,7 +114,7 @@ export default function ClientProposalsPage() {
 
         const { data: propData, error: propErr } = await supabase
           .from("v_proposals")
-          .select("id, job_id, freelancer_id, freelancer_name, cover_letter, proposed_fixed, proposed_rate, amount, message, status, rejection_reason, created_at")
+          .select("*")
           .eq("job_id", jobId)
           .order("created_at", { ascending: false });
 
@@ -268,10 +266,7 @@ export default function ClientProposalsPage() {
 
   const getDisplayName = (p: ProposalRow) => {
     const name = p.freelancer_name && String(p.freelancer_name).trim();
-    const username = p.freelancer_username && String(p.freelancer_username).trim();
-    if (name) return name;
-    if (username) return `@${username}`;
-    return p.freelancer_id ? `${p.freelancer_id.slice(0, 8)}…` : "—";
+    return name || (p.freelancer_id ? `${p.freelancer_id.slice(0, 8)}…` : "—");
   };
 
   const getInitial = (name: string) =>
@@ -325,31 +320,23 @@ export default function ClientProposalsPage() {
             <Card key={p.id} style={{ padding: 20 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  {p.freelancer_avatar_url ? (
-                    <img
-                      src={p.freelancer_avatar_url}
-                      alt=""
-                      style={{ width: 36, height: 36, borderRadius: "50%", objectFit: "cover" }}
-                    />
-                  ) : (
-                    <span
-                      style={{
-                        width: 36,
-                        height: 36,
-                        borderRadius: "50%",
-                        background: "var(--panel2)",
-                        border: "1px solid var(--border)",
-                        display: "inline-flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        fontSize: 14,
-                        fontWeight: 600,
-                        color: "var(--muted)",
-                      }}
-                    >
-                      {getInitial(getDisplayName(p))}
-                    </span>
-                  )}
+                  <span
+                    style={{
+                      width: 36,
+                      height: 36,
+                      borderRadius: "50%",
+                      background: "var(--panel2)",
+                      border: "1px solid var(--border)",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: 14,
+                      fontWeight: 600,
+                      color: "var(--muted)",
+                    }}
+                  >
+                    {getInitial(getDisplayName(p))}
+                  </span>
                   <strong>
                     <Link href={`/izvodjac/${p.freelancer_id}`} style={{ color: "inherit", textDecoration: "none" }}>
                       {getDisplayName(p)}

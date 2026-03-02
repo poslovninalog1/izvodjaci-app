@@ -18,15 +18,13 @@ export default function RoleSwitcher() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  const label = role === "client" ? "Poslodavac" : "Izvođač";
+
   if (isLoading) {
     return (
-      <span style={{ fontSize: 12, color: "var(--muted)" }}>Mod: …</span>
+      <span style={{ fontSize: 12, color: "var(--muted)" }}>…</span>
     );
   }
-
-  const label = role === "client" ? "Poslodavac" : "Izvođač";
-  const otherRole: "client" | "freelancer" = role === "client" ? "freelancer" : "client";
-  const otherLabel = otherRole === "client" ? "Poslodavac" : "Izvođač";
 
   return (
     <div ref={ref} style={{ position: "relative" }}>
@@ -44,7 +42,7 @@ export default function RoleSwitcher() {
           cursor: "pointer",
         }}
       >
-        Mod: {label} ▼
+        {label} ▼
       </button>
       {open && (
         <div
@@ -68,22 +66,50 @@ export default function RoleSwitcher() {
               width: "100%",
               padding: "8px 12px",
               textAlign: "left",
-              background: "none",
+              background: role === "freelancer" ? "var(--panel2)" : "none",
               border: "none",
               fontSize: 13,
-              cursor: "pointer",
-              color: role === otherRole ? "var(--muted)" : "var(--text)",
+              cursor: role === "freelancer" ? "default" : "pointer",
+              color: role === "freelancer" ? "var(--text)" : "var(--muted)",
             }}
             onClick={async () => {
-              try {
-                await setRole(otherRole);
-                setOpen(false);
-              } catch (e) {
-                if (DEV) console.debug("[RoleSwitcher] setRole failed", e);
+              if (role === "client") {
+                try {
+                  await setRole("freelancer");
+                  setOpen(false);
+                } catch (e) {
+                  if (DEV) console.debug("[RoleSwitcher] setRole failed", e);
+                }
               }
             }}
           >
-            Prebaci na {otherLabel}
+            Izvođač
+          </button>
+          <button
+            type="button"
+            style={{
+              display: "block",
+              width: "100%",
+              padding: "8px 12px",
+              textAlign: "left",
+              background: role === "client" ? "var(--panel2)" : "none",
+              border: "none",
+              fontSize: 13,
+              cursor: role === "client" ? "default" : "pointer",
+              color: role === "client" ? "var(--text)" : "var(--muted)",
+            }}
+            onClick={async () => {
+              if (role === "freelancer") {
+                try {
+                  await setRole("client");
+                  setOpen(false);
+                } catch (e) {
+                  if (DEV) console.debug("[RoleSwitcher] setRole failed", e);
+                }
+              }
+            }}
+          >
+            Poslodavac
           </button>
         </div>
       )}

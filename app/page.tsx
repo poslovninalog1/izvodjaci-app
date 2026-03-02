@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect } from "react";
+import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { useAuth } from "./context/AuthContext";
-import LandingHero from "./components/LandingHero";
+
+const LandingHero = dynamic(() => import("./components/LandingHero"), { ssr: false });
 
 export default function HomePage() {
   const router = useRouter();

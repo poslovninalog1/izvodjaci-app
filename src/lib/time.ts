@@ -14,3 +14,24 @@ export function relativeTime(date: string | Date): string {
   if (days < 7) return `pre ${days}d`;
   return new Date(date).toLocaleDateString("sr-Latn");
 }
+
+/** Day label for message timeline: "Danas" | "Juče" | formatted date */
+export function messageDayLabel(date: string | Date): string {
+  const d = new Date(date);
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const dDate = d.getDate();
+  const dMonth = d.getMonth();
+  const dYear = d.getFullYear();
+  const tDate = today.getDate();
+  const tMonth = today.getMonth();
+  const tYear = today.getFullYear();
+  const yDate = yesterday.getDate();
+  const yMonth = yesterday.getMonth();
+  const yYear = yesterday.getFullYear();
+
+  if (dDate === tDate && dMonth === tMonth && dYear === tYear) return "Danas";
+  if (dDate === yDate && dMonth === yMonth && dYear === yYear) return "Juče";
+  return d.toLocaleDateString("sr-Latn", { day: "numeric", month: "long", year: "numeric" });
+}
