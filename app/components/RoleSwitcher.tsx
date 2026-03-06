@@ -30,6 +30,7 @@ export default function RoleSwitcher() {
     <div ref={ref} style={{ position: "relative" }}>
       <button
         type="button"
+        className="premium-nav-item"
         onClick={() => setOpen((o) => !o)}
         style={{
           padding: "4px 10px",
@@ -46,21 +47,21 @@ export default function RoleSwitcher() {
       </button>
       {open && (
         <div
+          className="premium-dropdown"
           style={{
             position: "absolute",
             top: "100%",
             left: 0,
             marginTop: 4,
             background: "#fff",
-            border: "1px solid var(--border)",
-            borderRadius: "var(--radius-sm)",
-            boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
             minWidth: 140,
             zIndex: 100,
+            overflow: "hidden",
           }}
         >
           <button
             type="button"
+            className="premium-menu-item"
             style={{
               display: "block",
               width: "100%",
@@ -87,6 +88,7 @@ export default function RoleSwitcher() {
           </button>
           <button
             type="button"
+            className="premium-menu-item"
             style={{
               display: "block",
               width: "100%",

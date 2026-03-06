@@ -346,7 +346,7 @@ export default function InboxSidebar({ selectedId, showHeader, onNewClick }: Pro
           placeholder="Pretraži razgovore..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          className="w-full min-w-0 px-3 py-2 rounded-lg bg-white border border-gray-200 text-gray-900 placeholder-gray-400 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:border-transparent"
+          className="premium-focus w-full min-w-0 px-3 py-2 rounded-lg bg-white border border-gray-200 text-gray-900 placeholder-gray-400 text-sm focus:outline-none"
           aria-label="Pretraži razgovore"
         />
       </div>
@@ -377,10 +377,10 @@ export default function InboxSidebar({ selectedId, showHeader, onNewClick }: Pro
                 <Link
                   key={cid}
                   href={`/inbox/${cid}`}
-                  className={`flex items-start gap-3 p-3 rounded-lg no-underline transition-colors min-w-0 ${
+                  className={`premium-surface-sm flex items-start gap-3 p-3 rounded-lg no-underline min-w-0 border ${
                     active
-                      ? "bg-[var(--accent)]/10 border border-[var(--accent)]/30"
-                      : "hover:bg-gray-200/80 border border-transparent"
+                      ? "bg-[var(--accent)]/10 border-[var(--accent)]/30"
+                      : "border-transparent"
                   }`}
                   onClick={() => {
                     inboxContext?.setClearedReadId(cid);

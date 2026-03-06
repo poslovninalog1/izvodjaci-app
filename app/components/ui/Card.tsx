@@ -7,7 +7,7 @@ type Props = React.HTMLAttributes<HTMLDivElement> & {
 export default function Card({ children, className, style, ...props }: Props) {
   return (
     <div
-      className={className}
+      className={`premium-surface premium-surface-tilt ${className ?? ""}`.trim()}
       style={{
         background: "#ffffff",
         border: "1px solid var(--border)",

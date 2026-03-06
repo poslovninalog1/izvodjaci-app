@@ -9,6 +9,7 @@ import { relativeTime } from "@/src/lib/time";
 import Card from "../../components/ui/Card";
 import Textarea from "../../components/ui/Textarea";
 import Button from "../../components/ui/Button";
+import PostMediaCarousel from "../PostMediaCarousel";
 
 type Post = {
   id: string;
@@ -18,6 +19,7 @@ type Post = {
   created_at: string;
   updated_at: string;
   author_name: string;
+  media: { id: string; type: "image" | "video"; path: string; sort_order?: number }[];
 };
 
 type Comment = {
@@ -72,6 +74,17 @@ export default function PostDetailPage() {
       return;
     }
 
+    const { data: mediaRows } = await supabase
+      .from("community_post_media")
+      .select("id, type, path, sort_order")
+      .eq("post_id", postId)
+      .order("sort_order");
+
+    const media = ((mediaRows ?? []) as { id: string; type: "image" | "video"; path: string; sort_order: number }[]).map((m) => ({
+      ...m,
+      sort_order: m.sort_order ?? 0,
+    }));
+
     const d = postData as Record<string, unknown>;
     let authorName = "—";
     const authorId = d.author_id as string;
@@ -92,6 +105,7 @@ export default function PostDetailPage() {
       created_at: d.created_at as string,
       updated_at: d.updated_at as string,
       author_name: authorName,
+      media,
     });
     setLoading(false);
   }, [postId]);
@@ -235,7 +249,11 @@ export default function PostDetailPage() {
       </Link>
 
       {/* Post */}
-      <Card style={{ marginBottom: 24 }}>
+      <Card style={{ marginBottom: 24, overflow: "hidden", padding: 0 }}>
+        {post.media && post.media.length > 0 && (
+          <PostMediaCarousel media={post.media} />
+        )}
+        <div style={{ padding: 16 }}>
         <div
           style={{
             display: "flex",
@@ -297,6 +315,7 @@ export default function PostDetailPage() {
         >
           {post.body}
         </p>
+        </div>
       </Card>
 
       {/* Comments section */}

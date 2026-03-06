@@ -30,10 +30,11 @@ const styles: Record<Variant, React.CSSProperties> = {
   },
 };
 
-export default function Button({ variant = "secondary", children, style, ...props }: Props) {
+export default function Button({ variant = "secondary", children, style, className, ...props }: Props) {
   return (
     <button
       type="button"
+      className={`premium-btn ${className ?? ""}`.trim()}
       style={{
         padding: "8px 16px",
         borderRadius: "var(--radius-sm)",

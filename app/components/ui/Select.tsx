@@ -5,7 +5,7 @@ type Props = React.SelectHTMLAttributes<HTMLSelectElement>;
 export default function Select({ style, className, children, ...props }: Props) {
   return (
     <select
-      className={`uiInput ${className || ""}`.trim()}
+      className={`uiInput premium-focus ${className || ""}`.trim()}
       style={{
         padding: "10px 12px",
         borderRadius: "var(--radius-sm)",

@@ -11,6 +11,8 @@ import Input from "../components/ui/Input";
 import Select from "../components/ui/Select";
 import Button from "../components/ui/Button";
 import { sr } from "@/src/lib/strings/sr";
+import FilterDrawer from "./FilterDrawer";
+import JobsRightSidebar from "./JobsRightSidebar";
 
 type Job = {
   id: number;
@@ -30,7 +32,6 @@ type Job = {
 const PAGE_SIZE = 12;
 const DEV = typeof window !== "undefined" && process.env.NODE_ENV === "development";
 
-// ── Default filter values ──────────────────────────────────────────────────
 const DEFAULT_CATEGORY = "";
 const DEFAULT_CITY = "";
 const DEFAULT_IS_REMOTE: boolean | "" = "";
@@ -38,6 +39,8 @@ const DEFAULT_BUDGET_TYPE = "";
 const DEFAULT_BUDGET_MIN = "";
 const DEFAULT_BUDGET_MAX = "";
 const DEFAULT_SORT: "newest" | "budget" = "newest";
+
+type TabId = "best" | "newest" | "saved";
 
 export default function JobsPage() {
   const router = useRouter();
@@ -49,8 +52,10 @@ export default function JobsPage() {
   const [page, setPage] = useState(0);
   const [total, setTotal] = useState(0);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [activeTab, setActiveTab] = useState<TabId>("best");
 
-  // ── Filter state ───────────────────────────────────────────────────────
   const [categoryId, setCategoryId] = useState(DEFAULT_CATEGORY);
   const [city, setCity] = useState(DEFAULT_CITY);
   const [isRemote, setIsRemote] = useState<boolean | "">(DEFAULT_IS_REMOTE);
@@ -60,8 +65,8 @@ export default function JobsPage() {
   const [sort, setSort] = useState<"newest" | "budget">(DEFAULT_SORT);
 
   const requestIdRef = useRef(0);
+  const categoryMap = useRef<Map<number, string>>(new Map());
 
-  // ── Load categories + cities once ─────────────────────────────────────
   useEffect(() => {
     async function loadOptions() {
       const [catRes, cityRes] = await Promise.all([
@@ -74,22 +79,16 @@ export default function JobsPage() {
     loadOptions();
   }, []);
 
-  // ── Category name map (stable ref, no extra renders) ──────────────────
-  const categoryMap = useRef<Map<number, string>>(new Map());
   useEffect(() => {
     const m = new Map<number, string>();
     for (const c of categories) m.set(c.id, c.name);
     categoryMap.current = m;
   }, [categories]);
 
-  // ── Fetch jobs ─────────────────────────────────────────────────────────
   const fetchJobs = useCallback(async () => {
     const rid = ++requestIdRef.current;
-    if (DEV) console.log("[jobs] fetch start", { reqId: rid, page, categoryId, city, isRemote, budgetType, budgetMin, budgetMax, sort });
-
     setLoading(true);
     setFetchError(null);
-
     try {
       let query = supabase
         .from("jobs")
@@ -112,13 +111,8 @@ export default function JobsPage() {
       const from = page * PAGE_SIZE;
       const { data, count, error } = await query.range(from, from + PAGE_SIZE - 1);
 
-      if (DEV) console.log("[jobs] fetch end", { reqId: rid, currentReqId: requestIdRef.current, count, isStale: rid !== requestIdRef.current });
-
-      // Discard stale responses — but loading MUST still be cleared in finally
       if (rid !== requestIdRef.current) return;
-
       if (error) {
-        if (DEV) console.error("[jobs] Supabase error", { code: error.code, message: error.message, details: error.details });
         setFetchError(error.message || "Greška pri učitavanju poslova.");
         setJobs([]);
         setTotal(0);
@@ -126,16 +120,13 @@ export default function JobsPage() {
         setJobs((data as Job[]) ?? []);
         setTotal(count ?? 0);
       }
-    } catch (err) {
-      if (DEV) console.error("[jobs] exception", err);
-      if (rid !== requestIdRef.current) return;
-      setFetchError("Greška pri učitavanju poslova.");
-      setJobs([]);
-      setTotal(0);
+    } catch {
+      if (requestIdRef.current === requestIdRef.current) {
+        setFetchError("Greška pri učitavanju poslova.");
+        setJobs([]);
+        setTotal(0);
+      }
     } finally {
-      // Always clear loading — regardless of stale-request check.
-      // Leaving loading=true forever is worse than a minor flicker.
-      if (DEV) console.log("[jobs] loading=false", { reqId: rid });
       setLoading(false);
     }
   }, [page, categoryId, city, isRemote, budgetType, budgetMin, budgetMax, sort]);
@@ -144,7 +135,12 @@ export default function JobsPage() {
     fetchJobs();
   }, [fetchJobs]);
 
-  // ── Reset all filters ──────────────────────────────────────────────────
+  // Sync tab with sort (UI: "Najnoviji" = newest, "Najbolji mečevi" = best)
+  useEffect(() => {
+    if (activeTab === "newest") setSort("newest");
+    if (activeTab === "best") setSort("newest");
+  }, [activeTab]);
+
   function resetFilters() {
     setCategoryId(DEFAULT_CATEGORY);
     setCity(DEFAULT_CITY);
@@ -156,206 +152,258 @@ export default function JobsPage() {
     setPage(0);
   }
 
+  function applyFiltersAndClose() {
+    setPage(0);
+    fetchJobs();
+    setFiltersOpen(false);
+  }
+
   const totalPages = Math.ceil(total / PAGE_SIZE);
 
-  return (
-    <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 260px) 1fr", gap: 24, alignItems: "start" }} className="jobsLayout">
+  const filterForm = (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        applyFiltersAndClose();
+      }}
+      className="flex flex-col gap-4"
+    >
+      <div className="flex justify-between items-center">
+        <span className="text-sm font-medium text-gray-700">Filteri</span>
+        <button
+          type="button"
+          onClick={resetFilters}
+          className="text-xs text-[var(--accent)] bg-transparent border-none cursor-pointer p-0"
+        >
+          Resetuj
+        </button>
+      </div>
+      <div>
+        <label className="block mb-1 text-xs text-[var(--muted)]">Kategorija</label>
+        <Select value={categoryId} onChange={(e) => { setCategoryId(e.target.value); setPage(0); }}>
+          <option value="">{sr.allCategories}</option>
+          {categories.map((c) => (
+            <option key={c.id} value={c.id}>{c.name}</option>
+          ))}
+        </Select>
+      </div>
+      <div>
+        <label className="block mb-1 text-xs text-[var(--muted)]">Grad</label>
+        <Select value={city} onChange={(e) => { setCity(e.target.value); setPage(0); }}>
+          <option value="">{sr.allCities}</option>
+          {cities.map((c) => (
+            <option key={c.id} value={c.name}>{c.name}</option>
+          ))}
+        </Select>
+      </div>
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={isRemote === true}
+          onChange={(e) => { setIsRemote(e.target.checked ? true : ""); setPage(0); }}
+          style={{ accentColor: "var(--accent)" }}
+        />
+        {sr.remoteOnly}
+      </label>
+      <div>
+        <label className="block mb-1 text-xs text-[var(--muted)]">Tip budžeta</label>
+        <Select value={budgetType} onChange={(e) => { setBudgetType(e.target.value); setPage(0); }}>
+          <option value="">Svi</option>
+          <option value="fixed">{sr.fixed}</option>
+          <option value="hourly">{sr.hourly}</option>
+        </Select>
+      </div>
+      <div>
+        <label className="block mb-1 text-xs text-[var(--muted)]">Budžet (€)</label>
+        <div className="grid grid-cols-2 gap-2">
+          <Input
+            type="number"
+            min={0}
+            placeholder="Min"
+            value={budgetMin}
+            onChange={(e) => { setBudgetMin(e.target.value); setPage(0); }}
+          />
+          <Input
+            type="number"
+            min={0}
+            placeholder="Max"
+            value={budgetMax}
+            onChange={(e) => { setBudgetMax(e.target.value); setPage(0); }}
+          />
+        </div>
+      </div>
+      <div>
+        <label className="block mb-1 text-xs text-[var(--muted)]">Sortiraj</label>
+        <Select value={sort} onChange={(e) => { setSort(e.target.value as "newest" | "budget"); setPage(0); }}>
+          <option value="newest">{sr.newest}</option>
+          <option value="budget">Budžet (visok→nizak)</option>
+        </Select>
+      </div>
+      <Button type="submit" variant="primary">{sr.apply}</Button>
+    </form>
+  );
 
-      {/* ── Left: filter panel ── */}
-      <aside>
-        <Card style={{ position: "sticky", top: 80 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Filteri</h3>
+  return (
+    <div className="jobsLayout max-w-[1400px] mx-auto w-full">
+      {/* Top: search + tabs + Filteri button */}
+      <div className="mb-6">
+        <div className="mb-4">
+          <input
+            type="search"
+            placeholder="Pretraži poslove"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="premium-focus w-full max-w-xl px-4 py-2.5 rounded-xl border border-gray-200 bg-white text-gray-900 placeholder-gray-400 text-sm"
+            aria-label="Pretraži poslove"
+          />
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex rounded-lg border border-gray-200 bg-white p-0.5">
             <button
               type="button"
-              onClick={resetFilters}
-              style={{ fontSize: 12, color: "var(--accent)", background: "none", border: "none", cursor: "pointer", padding: 0 }}
+              className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+                activeTab === "best" ? "bg-gray-100 text-gray-900" : "text-gray-600 hover:bg-gray-50"
+              }`}
+              onClick={() => setActiveTab("best")}
             >
-              Resetuj
+              Najbolji mečevi
             </button>
+            <button
+              type="button"
+              className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+                activeTab === "newest" ? "bg-gray-100 text-gray-900" : "text-gray-600 hover:bg-gray-50"
+              }`}
+              onClick={() => setActiveTab("newest")}
+            >
+              Najnoviji
+            </button>
+            <Link
+              href="/jobs/saved"
+              className="px-4 py-2 text-sm font-medium rounded-md transition-colors no-underline text-gray-600 hover:bg-gray-50"
+            >
+              Sačuvani poslovi
+            </Link>
           </div>
-
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              setPage(0);
-              fetchJobs();
-            }}
-            style={{ display: "flex", flexDirection: "column", gap: 12 }}
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={() => setFiltersOpen(true)}
+            className="premium-btn"
           >
-            {/* Category */}
-            <div>
-              <label style={{ display: "block", marginBottom: 4, fontSize: 12, color: "var(--muted)" }}>Kategorija</label>
-              <Select value={categoryId} onChange={(e) => { setCategoryId(e.target.value); setPage(0); }}>
-                <option value="">{sr.allCategories}</option>
-                {categories.map((c) => (
-                  <option key={c.id} value={c.id}>{c.name}</option>
-                ))}
-              </Select>
+            Filteri
+          </Button>
+        </div>
+      </div>
+
+      {/* Main + right sidebar */}
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-8 items-start">
+        <div className="min-w-0">
+          <h1 className="m-0 mb-5 text-2xl font-semibold text-gray-900">{sr.jobs}</h1>
+
+          {fetchError && (
+            <Card style={{ marginBottom: 16, borderColor: "var(--danger)", color: "var(--danger)" }}>
+              <p className="m-0">{fetchError}</p>
+            </Card>
+          )}
+
+          {loading ? (
+            <p className="text-[var(--muted)]">{sr.loading}</p>
+          ) : jobs.length === 0 ? (
+            <div className="premium-card-base rounded-xl p-5">
+              <p className="m-0 text-[var(--muted)]">{fetchError ? "" : sr.noJobs}</p>
             </div>
-
-            {/* City */}
-            <div>
-              <label style={{ display: "block", marginBottom: 4, fontSize: 12, color: "var(--muted)" }}>Grad</label>
-              <Select value={city} onChange={(e) => { setCity(e.target.value); setPage(0); }}>
-                <option value="">{sr.allCities}</option>
-                {cities.map((c) => (
-                  <option key={c.id} value={c.name}>{c.name}</option>
-                ))}
-              </Select>
-            </div>
-
-            {/* Remote */}
-            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
-              <input
-                type="checkbox"
-                checked={isRemote === true}
-                onChange={(e) => { setIsRemote(e.target.checked ? true : ""); setPage(0); }}
-                style={{ accentColor: "var(--accent)" }}
-              />
-              {sr.remoteOnly}
-            </label>
-
-            {/* Budget type */}
-            <div>
-              <label style={{ display: "block", marginBottom: 4, fontSize: 12, color: "var(--muted)" }}>Tip budžeta</label>
-              <Select value={budgetType} onChange={(e) => { setBudgetType(e.target.value); setPage(0); }}>
-                <option value="">Svi</option>
-                <option value="fixed">{sr.fixed}</option>
-                <option value="hourly">{sr.hourly}</option>
-              </Select>
-            </div>
-
-            {/* Budget range */}
-            <div>
-              <label style={{ display: "block", marginBottom: 4, fontSize: 12, color: "var(--muted)" }}>Budžet (€)</label>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                <Input
-                  type="number"
-                  min="0"
-                  placeholder="Min"
-                  value={budgetMin}
-                  onChange={(e) => { setBudgetMin(e.target.value); setPage(0); }}
-                />
-                <Input
-                  type="number"
-                  min="0"
-                  placeholder="Max"
-                  value={budgetMax}
-                  onChange={(e) => { setBudgetMax(e.target.value); setPage(0); }}
-                />
-              </div>
-            </div>
-
-            {/* Sort */}
-            <div>
-              <label style={{ display: "block", marginBottom: 4, fontSize: 12, color: "var(--muted)" }}>Sortiraj</label>
-              <Select value={sort} onChange={(e) => { setSort(e.target.value as "newest" | "budget"); setPage(0); }}>
-                <option value="newest">{sr.newest}</option>
-                <option value="budget">Budžet (visok→nizak)</option>
-              </Select>
-            </div>
-
-            <Button type="submit" variant="primary">{sr.apply}</Button>
-          </form>
-        </Card>
-      </aside>
-
-      {/* ── Right: job cards ── */}
-      <div>
-        <h1 style={{ margin: "0 0 20px", fontSize: 24, fontWeight: 600 }}>{sr.jobs}</h1>
-
-        {fetchError && (
-          <Card style={{ marginBottom: 16, borderColor: "var(--danger)", color: "var(--danger)" }}>
-            <p style={{ margin: 0 }}>{fetchError}</p>
-          </Card>
-        )}
-
-        {loading ? (
-          <p style={{ color: "var(--muted)" }}>{sr.loading}</p>
-        ) : jobs.length === 0 ? (
-          <Card>
-            <p style={{ margin: 0, color: "var(--muted)" }}>{fetchError ? "" : sr.noJobs}</p>
-          </Card>
-        ) : (
-          <>
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {jobs.map((job) => {
-                const catName = job.category_id ? categoryMap.current.get(job.category_id) : null;
-                return (
-                  <Card key={job.id} style={{ padding: 20 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap" }}>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <Link href={`/jobs/${job.id}`} style={{ color: "inherit", textDecoration: "none" }}>
-                          <h3 style={{ margin: "0 0 8px", fontSize: 18, fontWeight: 600 }}>
-                            {job.title || "Bez naslova"}
-                          </h3>
-                        </Link>
-                        <p style={{ margin: 0, fontSize: 14, color: "var(--muted)", lineHeight: 1.5 }}>
-                          {(job.description || "").slice(0, 120)}
-                          {(job.description?.length ?? 0) > 120 ? "…" : ""}
-                        </p>
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
-                          {catName && <Badge variant="muted">{catName}</Badge>}
-                          {job.city && <Badge variant="muted">{job.city}</Badge>}
-                          {job.is_remote && <Badge variant="accent">Remote</Badge>}
-                          <span style={{ fontSize: 13, color: "var(--muted)" }}>
-                            {job.created_at ? new Date(job.created_at).toLocaleDateString("sr-Latn") : ""}
-                          </span>
-                        </div>
-                        {(job.budget_max != null || job.budget_min != null) && (
-                          <p style={{ margin: "4px 0 0", fontSize: 15, fontWeight: 600, color: "var(--accent)" }}>
-                            {job.budget_type === "hourly"
-                              ? `${job.budget_min ?? "?"}–${job.budget_max ?? "?"} €/h`
-                              : `do ${job.budget_max ?? job.budget_min} €`}
+          ) : (
+            <>
+              <div className="flex flex-col gap-3">
+                {jobs.map((job) => {
+                  const catName = job.category_id ? categoryMap.current.get(job.category_id) : null;
+                  return (
+                    <div
+                      key={job.id}
+                      className="premium-card premium-card-base premium-card-tilt rounded-xl p-5"
+                    >
+                      <div className="flex flex-wrap justify-between items-start gap-4">
+                        <div className="flex-1 min-w-0">
+                          <Link href={`/jobs/${job.id}`} className="no-underline text-inherit">
+                            <h3 className="m-0 mb-2 text-lg font-semibold text-gray-900">
+                              {job.title || "Bez naslova"}
+                            </h3>
+                          </Link>
+                          <p className="m-0 text-sm text-[var(--muted)] leading-snug">
+                            {(job.description || "").slice(0, 120)}
+                            {(job.description?.length ?? 0) > 120 ? "…" : ""}
                           </p>
-                        )}
-                      </div>
-                      <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-                        <Link href={`/jobs/${job.id}`}>
-                          <Button variant="secondary">{sr.view}</Button>
-                        </Link>
-                        <Button
-                          variant="primary"
-                          onClick={() => {
-                            const path = `/jobs/${job.id}?action=proposal`;
-                            if (!user) router.push(`/login?next=${encodeURIComponent(path)}`);
-                            else router.push(path);
-                          }}
-                        >
-                          {sr.sendProposal}
-                        </Button>
+                          <div className="flex flex-wrap gap-2 mt-3">
+                            {catName && <Badge variant="muted">{catName}</Badge>}
+                            {job.city && <Badge variant="muted">{job.city}</Badge>}
+                            {job.is_remote && <Badge variant="accent">Remote</Badge>}
+                            <span className="text-xs text-[var(--muted)]">
+                              {job.created_at ? new Date(job.created_at).toLocaleDateString("sr-Latn") : ""}
+                            </span>
+                          </div>
+                          {(job.budget_max != null || job.budget_min != null) && (
+                            <p className="mt-1 text-[15px] font-semibold text-[var(--accent)]">
+                              {job.budget_type === "hourly"
+                                ? `${job.budget_min ?? "?"}–${job.budget_max ?? "?"} €/h`
+                                : `do ${job.budget_max ?? job.budget_min} €`}
+                            </p>
+                          )}
+                        </div>
+                        <div className="flex gap-2 shrink-0">
+                          <Link href={`/jobs/${job.id}`}>
+                            <Button variant="secondary" className="premium-btn">{sr.view}</Button>
+                          </Link>
+                          <Button
+                            variant="primary"
+                            className="premium-btn"
+                            onClick={() => {
+                              const path = `/jobs/${job.id}?action=proposal`;
+                              if (!user) router.push(`/login?next=${encodeURIComponent(path)}`);
+                              else router.push(path);
+                            }}
+                          >
+                            {sr.sendProposal}
+                          </Button>
+                        </div>
                       </div>
                     </div>
-                  </Card>
-                );
-              })}
-            </div>
-
-            {totalPages > 1 && (
-              <div style={{ display: "flex", gap: 12, alignItems: "center", marginTop: 24 }}>
-                <Button
-                  variant="secondary"
-                  disabled={page === 0}
-                  onClick={() => setPage((p) => Math.max(0, p - 1))}
-                >
-                  {sr.previous}
-                </Button>
-                <span style={{ fontSize: 14, color: "var(--muted)" }}>
-                  {sr.page} {page + 1} / {totalPages} ({total} poslova)
-                </span>
-                <Button
-                  variant="secondary"
-                  disabled={page >= totalPages - 1}
-                  onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
-                >
-                  {sr.next}
-                </Button>
+                  );
+                })}
               </div>
-            )}
-          </>
-        )}
+
+              {totalPages > 1 && (
+                <div className="flex gap-3 items-center mt-6">
+                  <Button
+                    variant="secondary"
+                    disabled={page === 0}
+                    onClick={() => setPage((p) => Math.max(0, p - 1))}
+                    className="premium-btn"
+                  >
+                    {sr.previous}
+                  </Button>
+                  <span className="text-sm text-[var(--muted)]">
+                    {sr.page} {page + 1} / {totalPages} ({total} poslova)
+                  </span>
+                  <Button
+                    variant="secondary"
+                    disabled={page >= totalPages - 1}
+                    onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                    className="premium-btn"
+                  >
+                    {sr.next}
+                  </Button>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        <JobsRightSidebar />
       </div>
+
+      <FilterDrawer open={filtersOpen} onClose={() => setFiltersOpen(false)}>
+        {filterForm}
+      </FilterDrawer>
     </div>
   );
 }

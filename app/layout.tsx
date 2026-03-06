@@ -5,6 +5,7 @@ import TopHeader from "./components/TopHeader";
 import DeactivatedBanner from "./components/DeactivatedBanner";
 import RouteModeBanner from "./components/RouteModeBanner";
 import AccountTypeModal from "./components/AccountTypeModal";
+import GlobalContentWrapper from "./components/GlobalContentWrapper";
 
 export default function RootLayout({
   children,
@@ -20,10 +21,10 @@ export default function RootLayout({
               <TopHeader />
               <RouteModeBanner />
               <AccountTypeModal />
-              <main className="content">
+              <GlobalContentWrapper>
                 <DeactivatedBanner />
                 {children}
-              </main>
+              </GlobalContentWrapper>
             </div>
           </ToastProvider>
         </AuthProvider>

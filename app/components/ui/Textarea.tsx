@@ -1,11 +1,17 @@
 "use client";
 
+import { forwardRef } from "react";
+
 type Props = React.TextareaHTMLAttributes<HTMLTextAreaElement>;
 
-export default function Textarea({ style, className, ...props }: Props) {
+const Textarea = forwardRef<HTMLTextAreaElement, Props>(function Textarea(
+  { style, className, ...props },
+  ref
+) {
   return (
     <textarea
-      className={`uiInput ${className || ""}`.trim()}
+      ref={ref}
+      className={`uiInput premium-focus ${className || ""}`.trim()}
       style={{
         width: "100%",
         padding: "10px 12px",
@@ -20,4 +26,6 @@ export default function Textarea({ style, className, ...props }: Props) {
       {...props}
     />
   );
-}
+});
+
+export default Textarea;

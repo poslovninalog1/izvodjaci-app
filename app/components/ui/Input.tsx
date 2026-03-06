@@ -5,7 +5,7 @@ type Props = React.InputHTMLAttributes<HTMLInputElement>;
 export default function Input({ style, className, ...props }: Props) {
   return (
     <input
-      className={`uiInput ${className || ""}`.trim()}
+      className={`uiInput premium-focus ${className || ""}`.trim()}
       style={{
         width: "100%",
         padding: "10px 12px",

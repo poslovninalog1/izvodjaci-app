@@ -11,12 +11,23 @@ import RoleSwitcher from "./RoleSwitcher";
 
 type NavItem = { href: string; label: string; auth?: boolean; role?: "client" | "freelancer" | "admin" };
 
+/** Dropdown under "Poslovi": items depend on mode (Izvođač vs Poslodavac). */
+function getPosloviDropdownItems(activeRole: string | null): { href: string; label: string }[] {
+  const base = [
+    { href: "/jobs", label: "Poslovi" },
+    { href: "/jobs/saved", label: "Sačuvani poslovi" },
+  ];
+  if (activeRole === "freelancer") {
+    return [...base, { href: "/freelancer/proposals", label: "Moje ponude" }];
+  }
+  return [...base, { href: "/client/jobs", label: "Moji poslovi" }];
+}
+
 const NAV_ITEMS: NavItem[] = [
   { href: "/jobs", label: "Poslovi" },
   { href: "/community", label: "Zajednica" },
   { href: "/inbox", label: "Inbox", auth: true },
   { href: "/contracts", label: "Ugovori", auth: true },
-  { href: "/client/jobs", label: "Moji poslovi", auth: true, role: "client" },
   { href: "/freelancer/proposals", label: "Moje ponude", auth: true, role: "freelancer" },
   { href: "/admin", label: "Admin", auth: true, role: "admin" },
 ];
@@ -25,6 +36,18 @@ function isActive(href: string, pathname: string) {
   if (href === "/") return pathname === "/" || pathname === "/start";
   if (href === "/jobs") return pathname === "/jobs" || pathname.startsWith("/jobs/");
   return pathname === href || pathname.startsWith(href + "/");
+}
+
+/** True when any of the Poslovi dropdown routes is active. */
+function isPosloviDropdownActive(pathname: string) {
+  return (
+    pathname === "/jobs" ||
+    pathname.startsWith("/jobs/") ||
+    pathname === "/client/jobs" ||
+    pathname.startsWith("/client/jobs/") ||
+    pathname === "/freelancer/proposals" ||
+    pathname.startsWith("/freelancer/proposals/")
+  );
 }
 
 function getObjaviPosaoHref(
@@ -45,7 +68,9 @@ export default function TopHeader() {
   const router = useRouter();
   const { user, profile, loading, onboardingCompleted } = useAuth();
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [posloviDropdownOpen, setPosloviDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const posloviDropdownRef = useRef<HTMLDivElement>(null);
 
   const objaviPosaoHref = getObjaviPosaoHref(loading, user, onboardingCompleted, profile ?? null);
 
@@ -54,9 +79,20 @@ export default function TopHeader() {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
         setDropdownOpen(false);
       }
+      if (posloviDropdownRef.current && !posloviDropdownRef.current.contains(e.target as Node)) {
+        setPosloviDropdownOpen(false);
+      }
     }
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  useEffect(() => {
+    function handleEscape(e: KeyboardEvent) {
+      if (e.key === "Escape") setPosloviDropdownOpen(false);
+    }
+    document.addEventListener("keydown", handleEscape);
+    return () => document.removeEventListener("keydown", handleEscape);
   }, []);
 
   const activeRole = profile?.active_role ?? profile?.role ?? null;
@@ -65,8 +101,11 @@ export default function TopHeader() {
     if (it.role === "admin" && profile?.role !== "admin") return false;
     if (it.role === "client" && activeRole !== "client") return false;
     if (it.role === "freelancer" && activeRole !== "freelancer") return false;
+    // Moje ponude: show only in Poslovi dropdown for Izvođač, not as top-level tab
+    if (it.href === "/freelancer/proposals" && it.role === "freelancer") return false;
     return true;
   });
+  const posloviDropdownItems = getPosloviDropdownItems(activeRole);
 
   const handleLogout = async () => {
     if (typeof window !== "undefined") {
@@ -82,6 +121,7 @@ export default function TopHeader() {
 
   return (
     <header
+      className="premium-header-bar"
       style={{
         position: "sticky",
         top: 0,
@@ -104,14 +144,81 @@ export default function TopHeader() {
         {/* Brand */}
         <Logo href="/jobs" size="md" />
 
-        {/* Nav tabs (Upwork-like) */}
+        {/* Nav tabs (Upwork-like). Poslovi is a dropdown; Moji poslovi is only inside it. */}
         <nav style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
           {visibleItems.map((it) => {
             const active = isActive(it.href, pathname);
+            const isPoslovi = it.href === "/jobs" && it.label === "Poslovi";
+
+            if (isPoslovi) {
+              const posloviActive = isPosloviDropdownActive(pathname);
+              return (
+                <div key="poslovi-dropdown" ref={posloviDropdownRef} style={{ position: "relative" }}>
+                  <button
+                    type="button"
+                    className="premium-nav-item"
+                    onClick={() => setPosloviDropdownOpen((o) => !o)}
+                    aria-haspopup="menu"
+                    aria-expanded={posloviDropdownOpen}
+                    aria-label="Poslovi - izbor"
+                    style={{
+                      padding: "8px 14px",
+                      fontSize: 14,
+                      fontWeight: 500,
+                      color: posloviActive ? "var(--accent)" : "var(--muted)",
+                      background: "none",
+                      border: "none",
+                      borderBottom: posloviActive ? "2px solid var(--accent)" : "2px solid transparent",
+                      marginBottom: -1,
+                      cursor: "pointer",
+                      transition: "color 0.15s, border-color 0.15s",
+                    }}
+                  >
+                    Poslovi ▼
+                  </button>
+                  {posloviDropdownOpen && (
+                    <div
+                      role="menu"
+                      className="header-dropdown-panel premium-dropdown"
+                      style={{
+                        position: "absolute",
+                        top: "100%",
+                        left: 0,
+                        marginTop: 4,
+                        background: "#ffffff",
+                        minWidth: 220,
+                        zIndex: 100,
+                        overflow: "hidden",
+                      }}
+                    >
+                      {posloviDropdownItems.map((item) => {
+                        const itemActive = isActive(item.href, pathname);
+                        return (
+                          <Link
+                            key={item.href}
+                            href={item.href}
+                            role="menuitem"
+                            className="premium-menu-item block w-full text-left py-2 px-4 text-sm font-medium text-gray-700"
+                            style={{
+                              color: itemActive ? "var(--accent)" : undefined,
+                            }}
+                            onClick={() => setPosloviDropdownOpen(false)}
+                          >
+                            {item.label}
+                          </Link>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            }
+
             return (
               <Link
                 key={it.href}
                 href={it.href}
+                className="premium-nav-item"
                 style={{
                   padding: "8px 14px",
                   fontSize: 14,
@@ -135,6 +242,7 @@ export default function TopHeader() {
           {!profile?.deactivated && (
             <Link
               href={objaviPosaoHref}
+              className="premium-nav-item"
               style={{
                 padding: "8px 16px",
                 borderRadius: "var(--radius-sm)",
@@ -154,6 +262,7 @@ export default function TopHeader() {
               <div ref={dropdownRef} style={{ position: "relative" }}>
                 <button
                   type="button"
+                  className="premium-nav-item"
                   onClick={() => setDropdownOpen(!dropdownOpen)}
                   style={{
                     padding: "6px 12px",
@@ -169,22 +278,22 @@ export default function TopHeader() {
                 </button>
                 {dropdownOpen && (
                   <div
+                    className="premium-dropdown"
                     style={{
                       position: "absolute",
                       top: "100%",
                       right: 0,
                       marginTop: 4,
                       background: "#ffffff",
-                      border: "1px solid var(--border)",
-                      borderRadius: "var(--radius-sm)",
                       minWidth: 160,
-                      boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
+                      zIndex: 100,
+                      overflow: "hidden",
                     }}
                   >
                     <Link
                       href="/profil"
+                      className="premium-menu-item block"
                       style={{
-                        display: "block",
                         padding: "10px 16px",
                         color: "var(--text)",
                         fontSize: 14,
@@ -196,6 +305,7 @@ export default function TopHeader() {
                     </Link>
                     <button
                       type="button"
+                      className="premium-menu-item"
                       onClick={handleLogout}
                       style={{
                         display: "block",
@@ -218,6 +328,7 @@ export default function TopHeader() {
               <>
                 <Link
                   href="/login"
+                  className="premium-nav-item"
                   style={{
                     padding: "8px 16px",
                     color: "var(--muted)",
@@ -229,6 +340,7 @@ export default function TopHeader() {
                 </Link>
                 <Link
                   href="/register"
+                  className="premium-nav-item"
                   style={{
                     padding: "8px 16px",
                     borderRadius: "var(--radius-sm)",
